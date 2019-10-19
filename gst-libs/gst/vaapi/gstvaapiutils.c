@@ -25,21 +25,22 @@
 #include "sysdeps.h"
 #include "gstvaapicompat.h"
 #include "gstvaapiutils.h"
-#include "gstvaapisurface.h"
-#include "gstvaapisubpicture.h"
+#include "gstvaapibufferproxy.h"
 #include "gstvaapifilter.h"
+#include "gstvaapisubpicture.h"
+#include "gstvaapisurface.h"
 #include <stdio.h>
 #include <stdarg.h>
 
 #define DEBUG 1
 #include "gstvaapidebug.h"
 
-#define CONCAT(a, b)    CONCAT_(a, b)
-#define CONCAT_(a, b)   a##b
-#define STRINGIFY(x)    STRINGIFY_(x)
-#define STRINGIFY_(x)   #x
-#define STRCASEP(p, x)  STRCASE(CONCAT(p, x))
-#define STRCASE(x)      case x: return STRINGIFY(x)
+/* string case an enum */
+#define STRCASEP(p, x)  STRCASE(G_PASTE(p, x))
+#define STRCASE(x)      case x: return G_STRINGIFY(x)
+
+/* string case a macro */
+#define STRCASEM(p, x)  case G_PASTE(p, x): return G_STRINGIFY(x)
 
 #if VA_CHECK_VERSION (0,40,0)
 static gchar *
@@ -165,11 +166,20 @@ gboolean
 vaapi_create_buffer (VADisplay dpy, VAContextID ctx, int type, guint size,
     gconstpointer buf, VABufferID * buf_id_ptr, gpointer * mapped_data)
 {
+  return vaapi_create_n_elements_buffer (dpy, ctx, type, size, buf, buf_id_ptr,
+      mapped_data, 1);
+}
+
+gboolean
+vaapi_create_n_elements_buffer (VADisplay dpy, VAContextID ctx, int type,
+    guint size, gconstpointer buf, VABufferID * buf_id_ptr,
+    gpointer * mapped_data, int num_elements)
+{
   VABufferID buf_id;
   VAStatus status;
   gpointer data = (gpointer) buf;
 
-  status = vaCreateBuffer (dpy, ctx, type, size, 1, data, &buf_id);
+  status = vaCreateBuffer (dpy, ctx, type, size, num_elements, data, &buf_id);
   if (!vaapi_check_status (status, "vaCreateBuffer()"))
     return FALSE;
 
@@ -214,41 +224,30 @@ string_of_VAProfile (VAProfile profile)
       MAP (MPEG4Simple);
       MAP (MPEG4AdvancedSimple);
       MAP (MPEG4Main);
-#if VA_CHECK_VERSION(0,32,0)
       MAP (JPEGBaseline);
       MAP (H263Baseline);
       MAP (H264ConstrainedBaseline);
-#endif
 #if !VA_CHECK_VERSION(1,0,0)
       MAP (H264Baseline);
 #endif
       MAP (H264Main);
       MAP (H264High);
-#if VA_CHECK_VERSION(0,35,2)
       MAP (H264MultiviewHigh);
       MAP (H264StereoHigh);
-#endif
 #if VA_CHECK_VERSION(1,2,0)
       MAP (HEVCMain422_10);
+      MAP (HEVCMain444);
 #endif
-#if VA_CHECK_VERSION(0,37,1)
       MAP (HEVCMain);
       MAP (HEVCMain10);
-#endif
       MAP (VC1Simple);
       MAP (VC1Main);
       MAP (VC1Advanced);
-#if VA_CHECK_VERSION(0,35,0)
       MAP (VP8Version0_3);
-#endif
-#if VA_CHECK_VERSION(0,37,0)
       MAP (VP9Profile0);
-#endif
-#if VA_CHECK_VERSION(0,39,0)
       MAP (VP9Profile1);
       MAP (VP9Profile2);
       MAP (VP9Profile3);
-#endif
 #undef MAP
     default:
       break;
@@ -268,6 +267,13 @@ string_of_VAEntrypoint (VAEntrypoint entrypoint)
       MAP (IDCT);
       MAP (MoComp);
       MAP (Deblocking);
+      MAP (EncSlice);
+      MAP (EncPicture);
+      MAP (EncSliceLP);
+      MAP (VideoProc);
+#if VA_CHECK_VERSION(1,0,0)
+      MAP (FEI);
+#endif
 #undef MAP
     default:
       break;
@@ -287,17 +293,8 @@ string_of_VADisplayAttributeType (VADisplayAttribType attribute_type)
       MAP (Hue);
       MAP (Saturation);
       MAP (BackgroundColor);
-#if !VA_CHECK_VERSION(0,34,0)
-      MAP (DirectSurface);
-#endif
       MAP (Rotation);
       MAP (OutofLoopDeblock);
-#if VA_CHECK_VERSION(0,31,1) && !VA_CHECK_VERSION(0,34,0)
-      MAP (BLEBlackMode);
-      MAP (BLEWhiteMode);
-      MAP (BlueStretch);
-      MAP (SkinColorCorrection);
-#endif
       MAP (CSCMatrix);
       MAP (BlendColor);
       MAP (OverlayAutoPaintColorKey);
@@ -318,18 +315,22 @@ string_of_va_chroma_format (guint chroma_format)
 {
   switch (chroma_format) {
 #define MAP(value) \
-        STRCASEP(VA_RT_FORMAT_, value)
+        STRCASEM(VA_RT_FORMAT_, value)
       MAP (YUV420);
       MAP (YUV422);
       MAP (YUV444);
-#if VA_CHECK_VERSION(0,34,0)
       MAP (YUV400);
       MAP (RGB16);
       MAP (RGB32);
       MAP (RGBP);
-#endif
-#if VA_CHECK_VERSION(0,38,1)
       MAP (YUV420_10BPP);
+#if VA_CHECK_VERSION(1,2,0)
+      MAP (YUV422_10);
+      MAP (YUV444_10);
+      MAP (YUV420_12);
+      MAP (YUV422_12);
+      MAP (YUV444_12);
+      MAP (RGB32_10);
 #endif
 #undef MAP
     default:
@@ -344,19 +345,27 @@ string_of_VARateControl (guint rate_control)
   switch (rate_control) {
     case VA_RC_NONE:
       return "None";
-#ifdef VA_RC_CQP
     case VA_RC_CQP:
       return "CQP";
-#endif
     case VA_RC_CBR:
       return "CBR";
     case VA_RC_VCM:
       return "VCM";
     case VA_RC_VBR:
       return "VBR";
-#ifdef VA_RC_VBR_CONSTRAINED
     case VA_RC_VBR_CONSTRAINED:
       return "VBR-Constrained";
+#if VA_CHECK_VERSION(0,39,1)
+    case VA_RC_MB:
+      return "MB";
+#endif
+#if VA_CHECK_VERSION(1,1,0)
+    case VA_RC_ICQ:
+      return "VA_RC_ICQ";
+#endif
+#if VA_CHECK_VERSION(1,3,0)
+    case VA_RC_QVBR:
+      return "VA_RC_QVBR";
 #endif
     default:
       break;
@@ -376,47 +385,39 @@ string_of_VARateControl (guint rate_control)
 guint
 to_GstVaapiChromaType (guint va_rt_format)
 {
-  guint chroma_type;
-
-  switch (va_rt_format) {
-    case VA_RT_FORMAT_YUV420:
-      chroma_type = GST_VAAPI_CHROMA_TYPE_YUV420;
-      break;
-    case VA_RT_FORMAT_YUV422:
-      chroma_type = GST_VAAPI_CHROMA_TYPE_YUV422;
-      break;
-    case VA_RT_FORMAT_YUV444:
-      chroma_type = GST_VAAPI_CHROMA_TYPE_YUV444;
-      break;
-#if VA_CHECK_VERSION(0,34,0)
-    case VA_RT_FORMAT_YUV411:
-      chroma_type = GST_VAAPI_CHROMA_TYPE_YUV411;
-      break;
-    case VA_RT_FORMAT_YUV400:
-      chroma_type = GST_VAAPI_CHROMA_TYPE_YUV400;
-      break;
-    case VA_RT_FORMAT_RGB32:
-      chroma_type = GST_VAAPI_CHROMA_TYPE_RGB32;
-      break;
-    case VA_RT_FORMAT_RGB16:
-      chroma_type = GST_VAAPI_CHROMA_TYPE_RGB16;
-      break;
-#endif
-#if VA_CHECK_VERSION(0,38,1)
-    case VA_RT_FORMAT_YUV420_10BPP:
-      chroma_type = GST_VAAPI_CHROMA_TYPE_YUV420_10BPP;
-      break;
-#endif
+  if (va_rt_format & VA_RT_FORMAT_YUV420)
+    return GST_VAAPI_CHROMA_TYPE_YUV420;
+  if (va_rt_format & VA_RT_FORMAT_YUV422)
+    return GST_VAAPI_CHROMA_TYPE_YUV422;
+  if (va_rt_format & VA_RT_FORMAT_YUV444)
+    return GST_VAAPI_CHROMA_TYPE_YUV444;
+  if (va_rt_format & VA_RT_FORMAT_YUV411)
+    return GST_VAAPI_CHROMA_TYPE_YUV411;
+  if (va_rt_format & VA_RT_FORMAT_YUV400)
+    return GST_VAAPI_CHROMA_TYPE_YUV400;
+  if (va_rt_format & VA_RT_FORMAT_RGB32)
+    return GST_VAAPI_CHROMA_TYPE_RGB32;
+  if (va_rt_format & VA_RT_FORMAT_RGB16)
+    return GST_VAAPI_CHROMA_TYPE_RGB16;
+  if (va_rt_format & VA_RT_FORMAT_RGBP)
+    return GST_VAAPI_CHROMA_TYPE_RGBP;
+  if (va_rt_format & VA_RT_FORMAT_YUV420_10BPP)
+    return GST_VAAPI_CHROMA_TYPE_YUV420_10BPP;
 #if VA_CHECK_VERSION(1,2,0)
-    case VA_RT_FORMAT_YUV422_10:
-      chroma_type = GST_VAAPI_CHROMA_TYPE_YUV422_10BPP;
-      break;
+  if (va_rt_format & VA_RT_FORMAT_YUV422_10)
+    return GST_VAAPI_CHROMA_TYPE_YUV422_10BPP;
+  if (va_rt_format & VA_RT_FORMAT_YUV444_10)
+    return GST_VAAPI_CHROMA_TYPE_YUV444_10BPP;
+  if (va_rt_format & VA_RT_FORMAT_YUV420_12)
+    return GST_VAAPI_CHROMA_TYPE_YUV420_12BPP;
+  if (va_rt_format & VA_RT_FORMAT_YUV422_12)
+    return GST_VAAPI_CHROMA_TYPE_YUV422_12BPP;
+  if (va_rt_format & VA_RT_FORMAT_YUV444_12)
+    return GST_VAAPI_CHROMA_TYPE_YUV444_12BPP;
+  if (va_rt_format & VA_RT_FORMAT_RGB32_10)
+    return GST_VAAPI_CHROMA_TYPE_RGB32_10BPP;
 #endif
-    default:
-      chroma_type = 0;
-      break;
-  }
-  return chroma_type;
+  return 0;
 }
 
 /**
@@ -441,7 +442,6 @@ from_GstVaapiChromaType (guint chroma_type)
     case GST_VAAPI_CHROMA_TYPE_YUV444:
       format = VA_RT_FORMAT_YUV444;
       break;
-#if VA_CHECK_VERSION(0,34,0)
     case GST_VAAPI_CHROMA_TYPE_YUV411:
       format = VA_RT_FORMAT_YUV411;
       break;
@@ -454,15 +454,30 @@ from_GstVaapiChromaType (guint chroma_type)
     case GST_VAAPI_CHROMA_TYPE_RGB16:
       format = VA_RT_FORMAT_RGB16;
       break;
-#endif
-#if VA_CHECK_VERSION(0,38,1)
+    case GST_VAAPI_CHROMA_TYPE_RGBP:
+      format = VA_RT_FORMAT_RGBP;
+      break;
     case GST_VAAPI_CHROMA_TYPE_YUV420_10BPP:
       format = VA_RT_FORMAT_YUV420_10BPP;
       break;
-#endif
 #if VA_CHECK_VERSION(1,2,0)
     case GST_VAAPI_CHROMA_TYPE_YUV422_10BPP:
       format = VA_RT_FORMAT_YUV422_10;
+      break;
+    case GST_VAAPI_CHROMA_TYPE_YUV444_10BPP:
+      format = VA_RT_FORMAT_YUV444_10;
+      break;
+    case GST_VAAPI_CHROMA_TYPE_YUV420_12BPP:
+      format = VA_RT_FORMAT_YUV420_12;
+      break;
+    case GST_VAAPI_CHROMA_TYPE_YUV422_12BPP:
+      format = VA_RT_FORMAT_YUV422_12;
+      break;
+    case GST_VAAPI_CHROMA_TYPE_YUV444_12BPP:
+      format = VA_RT_FORMAT_YUV444_12;
+      break;
+    case GST_VAAPI_CHROMA_TYPE_RGB32_10BPP:
+      format = VA_RT_FORMAT_RGB32_10;
       break;
 #endif
     default:
@@ -638,10 +653,8 @@ to_GstVaapiSurfaceStatus (guint va_flags)
   }
 
   /* Check for encoder status */
-#if VA_CHECK_VERSION(0,30,0)
   if (va_flags & VASurfaceSkipped)
     flags |= GST_VAAPI_SURFACE_STATUS_SKIPPED;
-#endif
   return flags;
 }
 
@@ -687,23 +700,27 @@ from_GstVaapiRateControl (guint value)
   switch (value) {
     case GST_VAAPI_RATECONTROL_NONE:
       return VA_RC_NONE;
-#ifdef VA_RC_CQP
     case GST_VAAPI_RATECONTROL_CQP:
       return VA_RC_CQP;
-#endif
     case GST_VAAPI_RATECONTROL_CBR:
       return VA_RC_CBR;
     case GST_VAAPI_RATECONTROL_VCM:
       return VA_RC_VCM;
     case GST_VAAPI_RATECONTROL_VBR:
       return VA_RC_VBR;
-#ifdef VA_RC_VBR_CONSTRAINED
     case GST_VAAPI_RATECONTROL_VBR_CONSTRAINED:
       return VA_RC_VBR_CONSTRAINED;
-#endif
-#ifdef VA_RC_MB
+#if VA_CHECK_VERSION(0,39,1)
     case GST_VAAPI_RATECONTROL_MB:
       return VA_RC_MB;
+#endif
+#if VA_CHECK_VERSION(1,1,0)
+    case GST_VAAPI_RATECONTROL_ICQ:
+      return VA_RC_ICQ;
+#endif
+#if VA_CHECK_VERSION(1,3,0)
+    case GST_VAAPI_RATECONTROL_QVBR:
+      return VA_RC_QVBR;
 #endif
   }
   GST_ERROR ("unsupported GstVaapiRateControl value %u", value);
@@ -716,24 +733,29 @@ to_GstVaapiRateControl (guint value)
   switch (value) {
     case VA_RC_NONE:
       return GST_VAAPI_RATECONTROL_NONE;
-#ifdef VA_RC_CQP
     case VA_RC_CQP:
       return GST_VAAPI_RATECONTROL_CQP;
-#endif
     case VA_RC_CBR:
       return GST_VAAPI_RATECONTROL_CBR;
     case VA_RC_VCM:
       return GST_VAAPI_RATECONTROL_VCM;
     case VA_RC_VBR:
       return GST_VAAPI_RATECONTROL_VBR;
-#ifdef VA_RC_VBR_CONSTRAINED
     case VA_RC_VBR_CONSTRAINED:
       return GST_VAAPI_RATECONTROL_VBR_CONSTRAINED;
-#endif
-#ifdef VA_RC_MB
+#if VA_CHECK_VERSION(0,39,1)
     case VA_RC_MB:
       return GST_VAAPI_RATECONTROL_MB;
 #endif
+#if VA_CHECK_VERSION(1,1,0)
+    case VA_RC_ICQ:
+      return GST_VAAPI_RATECONTROL_ICQ;
+#endif
+#if VA_CHECK_VERSION(1,3,0)
+    case VA_RC_QVBR:
+      return GST_VAAPI_RATECONTROL_QVBR;
+#endif
+
   }
   GST_ERROR ("unsupported VA-API Rate Control value %u", value);
   return GST_VAAPI_RATECONTROL_NONE;
@@ -746,7 +768,6 @@ from_GstVaapiDeinterlaceMethod (guint value)
   switch (value) {
     case GST_VAAPI_DEINTERLACE_METHOD_NONE:
       return 0;
-#if USE_VA_VPP
     case GST_VAAPI_DEINTERLACE_METHOD_BOB:
       return VAProcDeinterlacingBob;
     case GST_VAAPI_DEINTERLACE_METHOD_WEAVE:
@@ -755,7 +776,6 @@ from_GstVaapiDeinterlaceMethod (guint value)
       return VAProcDeinterlacingMotionAdaptive;
     case GST_VAAPI_DEINTERLACE_METHOD_MOTION_COMPENSATED:
       return VAProcDeinterlacingMotionCompensated;
-#endif
   }
   GST_ERROR ("unsupported GstVaapiDeinterlaceMethod value %d", value);
   return 0;
@@ -767,7 +787,6 @@ from_GstVaapiDeinterlaceFlags (guint flags)
 {
   guint va_flags = 0;
 
-#if USE_VA_VPP
   if (!(flags & GST_VAAPI_DEINTERLACE_FLAG_TFF))
     va_flags |= VA_DEINTERLACING_BOTTOM_FIELD_FIRST;
 
@@ -776,7 +795,6 @@ from_GstVaapiDeinterlaceFlags (guint flags)
 
   if (!(flags & GST_VAAPI_DEINTERLACE_FLAG_TOPFIELD))
     va_flags |= VA_DEINTERLACING_BOTTOM_FIELD;
-#endif
   return va_flags;
 }
 
@@ -821,4 +839,115 @@ to_GstVaapiScaleMethod (guint flags)
       break;
   }
   return method;
+}
+
+/* VPP: translate GstVideoOrientationMethod into VA mirror/rotation flags */
+void
+from_GstVideoOrientationMethod (guint value, guint * va_mirror,
+    guint * va_rotation)
+{
+  *va_mirror = 0;
+  *va_rotation = 0;
+
+  switch (value) {
+#if VA_CHECK_VERSION(1,1,0)
+    case GST_VIDEO_ORIENTATION_IDENTITY:
+      *va_mirror = VA_MIRROR_NONE;
+      *va_rotation = VA_ROTATION_NONE;
+      break;
+    case GST_VIDEO_ORIENTATION_HORIZ:
+      *va_mirror = VA_MIRROR_HORIZONTAL;
+      *va_rotation = VA_ROTATION_NONE;
+      break;
+    case GST_VIDEO_ORIENTATION_VERT:
+      *va_mirror = VA_MIRROR_VERTICAL;
+      *va_rotation = VA_ROTATION_NONE;
+      break;
+    case GST_VIDEO_ORIENTATION_90R:
+      *va_mirror = VA_MIRROR_NONE;
+      *va_rotation = VA_ROTATION_90;
+      break;
+    case GST_VIDEO_ORIENTATION_180:
+      *va_mirror = VA_MIRROR_NONE;
+      *va_rotation = VA_ROTATION_180;
+      break;
+    case GST_VIDEO_ORIENTATION_90L:
+      *va_mirror = VA_MIRROR_NONE;
+      *va_rotation = VA_ROTATION_270;
+      break;
+    case GST_VIDEO_ORIENTATION_UL_LR:
+      *va_mirror = VA_MIRROR_HORIZONTAL;
+      *va_rotation = VA_ROTATION_90;
+      break;
+    case GST_VIDEO_ORIENTATION_UR_LL:
+      *va_mirror = VA_MIRROR_VERTICAL;
+      *va_rotation = VA_ROTATION_90;
+      break;
+#endif
+    default:
+      break;
+  }
+}
+
+/**
+ * from_GstVaapiBufferMemoryType:
+ * @type: a #GstVaapiBufferMemoryType
+ *
+ * Returns: the VA's memory type symbol
+ **/
+guint
+from_GstVaapiBufferMemoryType (guint type)
+{
+  guint va_type;
+
+  switch (type) {
+#if VA_CHECK_VERSION(1,1,0)
+    case GST_VAAPI_BUFFER_MEMORY_TYPE_DMA_BUF2:
+      va_type = VA_SURFACE_ATTRIB_MEM_TYPE_DRM_PRIME_2;
+      break;
+#endif
+    case GST_VAAPI_BUFFER_MEMORY_TYPE_DMA_BUF:
+      va_type = VA_SURFACE_ATTRIB_MEM_TYPE_DRM_PRIME;
+      break;
+    case GST_VAAPI_BUFFER_MEMORY_TYPE_GEM_BUF:
+      va_type = VA_SURFACE_ATTRIB_MEM_TYPE_KERNEL_DRM;
+      break;
+    case GST_VAAPI_BUFFER_MEMORY_TYPE_V4L2:
+      va_type = VA_SURFACE_ATTRIB_MEM_TYPE_V4L2;
+      break;
+    case GST_VAAPI_BUFFER_MEMORY_TYPE_USER_PTR:
+      va_type = VA_SURFACE_ATTRIB_MEM_TYPE_USER_PTR;
+      break;
+    default:
+      va_type = 0;
+      break;
+  }
+  return va_type;
+}
+
+/**
+ * to_GstVaapiBufferMemoryType:
+ * @va_type: a VA's memory type symbol
+ *
+ * It will return the first "supported" memory type from @va_type bit
+ * flag.
+ *
+ * Returns: a #GstVaapiBufferMemoryType or 0 if unknown.
+ **/
+guint
+to_GstVaapiBufferMemoryType (guint va_type)
+{
+#if VA_CHECK_VERSION(1,1,0)
+  if ((va_type & VA_SURFACE_ATTRIB_MEM_TYPE_DRM_PRIME_2))
+    return GST_VAAPI_BUFFER_MEMORY_TYPE_DMA_BUF2;
+#endif
+  if ((va_type & VA_SURFACE_ATTRIB_MEM_TYPE_DRM_PRIME))
+    return GST_VAAPI_BUFFER_MEMORY_TYPE_DMA_BUF;
+  if ((va_type & VA_SURFACE_ATTRIB_MEM_TYPE_KERNEL_DRM))
+    return GST_VAAPI_BUFFER_MEMORY_TYPE_GEM_BUF;
+  if ((va_type & VA_SURFACE_ATTRIB_MEM_TYPE_V4L2))
+    return GST_VAAPI_BUFFER_MEMORY_TYPE_V4L2;
+  if ((va_type & VA_SURFACE_ATTRIB_MEM_TYPE_USER_PTR))
+    return GST_VAAPI_BUFFER_MEMORY_TYPE_USER_PTR;
+  return 0;
 }

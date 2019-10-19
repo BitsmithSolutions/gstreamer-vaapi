@@ -30,9 +30,6 @@
 #include "gstvaapisurface_priv.h"
 #include "gstvaapiutils_core.h"
 
-#define DEBUG 1
-#include "gstvaapidebug.h"
-
 #define GST_VAAPI_FILTER_CAST(obj) \
     ((GstVaapiFilter *)(obj))
 
@@ -64,13 +61,16 @@ struct _GstVaapiFilter
   GPtrArray *operations;
   GstVideoFormat format;
   GstVaapiScaleMethod scale_method;
-  GArray *formats;
+  GstVideoOrientationMethod video_direction;
+  GstVaapiConfigSurfaceAttributes *attribs;
   GArray *forward_references;
   GArray *backward_references;
   GstVaapiRectangle crop_rect;
   GstVaapiRectangle target_rect;
   guint use_crop_rect:1;
   guint use_target_rect:1;
+  guint32 mirror_flags;
+  guint32 rotation_flags;
 };
 
 typedef struct _GstVaapiFilterClass GstVaapiFilterClass;
@@ -80,7 +80,16 @@ struct _GstVaapiFilterClass
   GstObjectClass parent_class;
 };
 
-G_DEFINE_TYPE (GstVaapiFilter, gst_vaapi_filter, GST_TYPE_OBJECT);
+/* Debug category for VaapiFilter */
+GST_DEBUG_CATEGORY (gst_debug_vaapi_filter);
+#define GST_CAT_DEFAULT gst_debug_vaapi_filter
+
+#define _do_init                                                       \
+    GST_DEBUG_CATEGORY_INIT (gst_debug_vaapi_filter, "vaapifilter", 0, \
+    "VA-API Filter");
+
+G_DEFINE_TYPE_WITH_CODE (GstVaapiFilter, gst_vaapi_filter, GST_TYPE_OBJECT,
+    _do_init);
 
 /* ------------------------------------------------------------------------- */
 /* --- VPP Types                                                         --- */
@@ -119,14 +128,12 @@ gst_vaapi_deinterlace_method_get_type (void)
         "Disable deinterlacing", "none"},
     {GST_VAAPI_DEINTERLACE_METHOD_BOB,
         "Bob deinterlacing", "bob"},
-#if USE_VA_VPP
     {GST_VAAPI_DEINTERLACE_METHOD_WEAVE,
         "Weave deinterlacing", "weave"},
     {GST_VAAPI_DEINTERLACE_METHOD_MOTION_ADAPTIVE,
         "Motion adaptive deinterlacing", "motion-adaptive"},
     {GST_VAAPI_DEINTERLACE_METHOD_MOTION_COMPENSATED,
         "Motion compensated deinterlacing", "motion-compensated"},
-#endif
     {0, NULL, NULL},
   };
 
@@ -165,7 +172,6 @@ gst_vaapi_deinterlace_flags_get_type (void)
 /* --- VPP Helpers                                                       --- */
 /* ------------------------------------------------------------------------- */
 
-#if USE_VA_VPP
 static VAProcFilterType *
 vpp_get_filters_unlocked (GstVaapiFilter * filter, guint * num_filters_ptr)
 {
@@ -267,15 +273,49 @@ vpp_get_filter_caps (GstVaapiFilter * filter, VAProcFilterType type,
   GST_VAAPI_DISPLAY_UNLOCK (filter->display);
   return caps;
 }
+
+static void
+vpp_get_pipeline_caps_unlocked (GstVaapiFilter * filter)
+{
+#if VA_CHECK_VERSION(1,1,0)
+  VAProcPipelineCaps pipeline_caps = { 0, };
+
+  VAStatus va_status = vaQueryVideoProcPipelineCaps (filter->va_display,
+      filter->va_context, NULL, 0, &pipeline_caps);
+
+  if (vaapi_check_status (va_status, "vaQueryVideoProcPipelineCaps()")) {
+    filter->mirror_flags = pipeline_caps.mirror_flags;
+    filter->rotation_flags = pipeline_caps.rotation_flags;
+    return;
+  }
 #endif
+
+  filter->mirror_flags = 0;
+  filter->rotation_flags = 0;
+}
+
+static void
+vpp_get_pipeline_caps (GstVaapiFilter * filter)
+{
+  GST_VAAPI_DISPLAY_LOCK (filter->display);
+  vpp_get_pipeline_caps_unlocked (filter);
+  GST_VAAPI_DISPLAY_UNLOCK (filter->display);
+}
 
 /* ------------------------------------------------------------------------- */
 /* --- VPP Operations                                                   --- */
 /* ------------------------------------------------------------------------- */
 
-#if USE_VA_VPP
 #define DEFAULT_FORMAT  GST_VIDEO_FORMAT_UNKNOWN
-#define DEFAULT_SCALING GST_VAAPI_SCALE_METHOD_DEFAULT
+
+#define OP_DATA_DEFAULT_VALUE(type, op_data) \
+    g_value_get_##type (g_param_spec_get_default_value (op_data->pspec))
+
+#define OP_RET_DEFAULT_VALUE(type, filter, op) \
+    do { \
+      g_return_val_if_fail (filter != NULL, FALSE); \
+      return OP_DATA_DEFAULT_VALUE (type, find_operation (filter, op)); \
+    } while (0)
 
 enum
 {
@@ -296,7 +336,11 @@ enum
   PROP_CONTRAST = GST_VAAPI_FILTER_OP_CONTRAST,
   PROP_DEINTERLACING = GST_VAAPI_FILTER_OP_DEINTERLACING,
   PROP_SCALING = GST_VAAPI_FILTER_OP_SCALING,
+  PROP_VIDEO_DIRECTION = GST_VAAPI_FILTER_OP_VIDEO_DIRECTION,
+#ifndef GST_REMOVE_DEPRECATED
   PROP_SKINTONE = GST_VAAPI_FILTER_OP_SKINTONE,
+#endif
+  PROP_SKINTONE_LEVEL = GST_VAAPI_FILTER_OP_SKINTONE_LEVEL,
 
   N_PROPERTIES
 };
@@ -417,9 +461,23 @@ init_properties (void)
       "Scaling Method",
       "Scaling method to use",
       GST_VAAPI_TYPE_SCALE_METHOD,
-      DEFAULT_SCALING, G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS);
+      GST_VAAPI_SCALE_METHOD_DEFAULT,
+      G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS);
 
-#if VA_CHECK_VERSION(0,36,0)
+  /**
+   * GstVaapiFilter:video-direction:
+   *
+   * The video-direction to use, expressed as an enum value. See
+   * #GstVideoOrientationMethod.
+   */
+  g_properties[PROP_VIDEO_DIRECTION] = g_param_spec_enum ("video-direction",
+      "Video Direction",
+      "Video direction: rotation and flipping",
+      GST_TYPE_VIDEO_ORIENTATION_METHOD,
+      GST_VIDEO_ORIENTATION_IDENTITY,
+      G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS);
+
+#ifndef GST_REMOVE_DEPRECATED
   /**
    * GstVaapiFilter:skin-tone-enhancement:
    *
@@ -430,6 +488,17 @@ init_properties (void)
       "Apply the skin tone enhancement algorithm",
       FALSE, G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS);
 #endif
+
+  /**
+   * GstVaapiFilter:skin-tone-enhancement-level:
+   *
+   * Apply the skin tone enhancement algorithm with specified value.
+   */
+  g_properties[PROP_SKINTONE_LEVEL] =
+      g_param_spec_uint ("skin-tone-enhancement-level",
+      "Skin tone enhancement level",
+      "Apply the skin tone enhancement algorithm with specified level", 0, 9, 3,
+      G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS);
 }
 
 static void
@@ -466,6 +535,7 @@ op_data_new (GstVaapiFilterOp op, GParamSpec * pspec)
     case GST_VAAPI_FILTER_OP_FORMAT:
     case GST_VAAPI_FILTER_OP_CROP:
     case GST_VAAPI_FILTER_OP_SCALING:
+    case GST_VAAPI_FILTER_OP_VIDEO_DIRECTION:
       op_data->va_type = VAProcFilterNone;
       break;
     case GST_VAAPI_FILTER_OP_DENOISE:
@@ -478,12 +548,13 @@ op_data_new (GstVaapiFilterOp op, GParamSpec * pspec)
       op_data->va_cap_size = sizeof (VAProcFilterCap);
       op_data->va_buffer_size = sizeof (VAProcFilterParameterBuffer);
       break;
-#if VA_CHECK_VERSION(0,36,0)
+#ifndef GST_REMOVE_DEPRECATED
     case GST_VAAPI_FILTER_OP_SKINTONE:
+#endif
+    case GST_VAAPI_FILTER_OP_SKINTONE_LEVEL:
       op_data->va_type = VAProcFilterSkinToneEnhancement;
       op_data->va_buffer_size = sizeof (VAProcFilterParameterBuffer);
       break;
-#endif
     case GST_VAAPI_FILTER_OP_HUE:
       op_data->va_subtype = VAProcColorBalanceHue;
       goto op_colorbalance;
@@ -691,6 +762,8 @@ get_operations_ordered (GstVaapiFilter * filter, GPtrArray * default_ops)
     filter_caps = NULL;
   }
 
+  vpp_get_pipeline_caps (filter);
+
   if (filter->operations)
     g_ptr_array_unref (filter->operations);
   filter->operations = g_ptr_array_ref (ops);
@@ -709,14 +782,12 @@ error:
     return NULL;
   }
 }
-#endif
 
 /* Determine the set of supported VPP operations by the specific
    filter, or known to this library if filter is NULL */
 static GPtrArray *
 get_operations (GstVaapiFilter * filter)
 {
-#if USE_VA_VPP
   GPtrArray *ops;
 
   if (filter && filter->operations)
@@ -726,8 +797,6 @@ get_operations (GstVaapiFilter * filter)
   if (!ops)
     return NULL;
   return filter ? get_operations_ordered (filter, ops) : ops;
-#endif
-  return NULL;
 }
 
 /* Ensure the set of supported VPP operations is cached into the
@@ -770,20 +839,24 @@ find_operation (GstVaapiFilter * filter, GstVaapiFilterOp op)
 }
 
 /* Ensure the operation's VA buffer is allocated */
-#if USE_VA_VPP
 static inline gboolean
-op_ensure_buffer (GstVaapiFilter * filter, GstVaapiFilterOpData * op_data)
+op_ensure_n_elements_buffer (GstVaapiFilter * filter,
+    GstVaapiFilterOpData * op_data, gint op_num)
 {
   if (G_LIKELY (op_data->va_buffer != VA_INVALID_ID))
     return TRUE;
-  return vaapi_create_buffer (filter->va_display, filter->va_context,
+  return vaapi_create_n_elements_buffer (filter->va_display, filter->va_context,
       VAProcFilterParameterBufferType, op_data->va_buffer_size, NULL,
-      &op_data->va_buffer, NULL);
+      &op_data->va_buffer, NULL, op_num);
 }
-#endif
+
+static inline gboolean
+op_ensure_buffer (GstVaapiFilter * filter, GstVaapiFilterOpData * op_data)
+{
+  return op_ensure_n_elements_buffer (filter, op_data, 1);
+}
 
 /* Update a generic filter (float value) */
-#if USE_VA_VPP
 static gboolean
 op_set_generic_unlocked (GstVaapiFilter * filter,
     GstVaapiFilterOpData * op_data, gfloat value)
@@ -795,8 +868,7 @@ op_set_generic_unlocked (GstVaapiFilter * filter,
   if (!op_data || !op_ensure_buffer (filter, op_data))
     return FALSE;
 
-  op_data->is_enabled =
-      (value != G_PARAM_SPEC_FLOAT (op_data->pspec)->default_value);
+  op_data->is_enabled = (value != OP_DATA_DEFAULT_VALUE (float, op_data));
   if (!op_data->is_enabled)
     return TRUE;
 
@@ -813,7 +885,6 @@ op_set_generic_unlocked (GstVaapiFilter * filter,
   vaapi_unmap_buffer (filter->va_display, op_data->va_buffer, NULL);
   return TRUE;
 }
-#endif
 
 static inline gboolean
 op_set_generic (GstVaapiFilter * filter, GstVaapiFilterOpData * op_data,
@@ -821,16 +892,16 @@ op_set_generic (GstVaapiFilter * filter, GstVaapiFilterOpData * op_data,
 {
   gboolean success = FALSE;
 
-#if USE_VA_VPP
   GST_VAAPI_DISPLAY_LOCK (filter->display);
   success = op_set_generic_unlocked (filter, op_data, value);
   GST_VAAPI_DISPLAY_UNLOCK (filter->display);
-#endif
   return success;
 }
 
 /* Update the color balance filter */
-#if USE_VA_VPP
+#define COLOR_BALANCE_NUM \
+    GST_VAAPI_FILTER_OP_CONTRAST - GST_VAAPI_FILTER_OP_HUE + 1
+
 static gboolean
 op_set_color_balance_unlocked (GstVaapiFilter * filter,
     GstVaapiFilterOpData * op_data, gfloat value)
@@ -838,30 +909,87 @@ op_set_color_balance_unlocked (GstVaapiFilter * filter,
   VAProcFilterParameterBufferColorBalance *buf;
   VAProcFilterCapColorBalance *filter_cap;
   gfloat va_value;
+  gint i;
+  GstVaapiFilterOpData *color_data[COLOR_BALANCE_NUM];
+  GstVaapiFilterOpData *enabled_data = NULL;
+  gboolean ret = TRUE;
 
-  if (!op_data || !op_ensure_buffer (filter, op_data))
+  if (!op_data)
     return FALSE;
 
-  op_data->is_enabled =
-      (value != G_PARAM_SPEC_FLOAT (op_data->pspec)->default_value);
-  if (!op_data->is_enabled)
-    return TRUE;
+  /* collect all the Color Balance operators and find the first
+   * enabled one */
+  for (i = 0; i < COLOR_BALANCE_NUM; i++) {
+    color_data[i] = find_operation (filter, GST_VAAPI_FILTER_OP_HUE + i);
+    if (!color_data[i])
+      return FALSE;
 
-  filter_cap = op_data->va_caps;
-  if (!op_data_get_value_float (op_data, &filter_cap->range, value, &va_value))
-    return FALSE;
+    if (!enabled_data && color_data[i]->is_enabled)
+      enabled_data = color_data[i];
+  }
 
-  buf = vaapi_map_buffer (filter->va_display, op_data->va_buffer);
-  if (!buf)
-    return FALSE;
+  /* If there's no enabled operators let's enable this one.
+   *
+   * HACK: This operator will be the only one with an allocated buffer
+   * which will store all the color balance operators.
+   */
+  if (!enabled_data) {
+    /* *INDENT-OFF* */
+    if (value == OP_DATA_DEFAULT_VALUE (float, op_data))
+      return TRUE;
+    /* *INDENT-ON* */
 
-  buf->type = op_data->va_type;
-  buf->attrib = op_data->va_subtype;
-  buf->value = va_value;
-  vaapi_unmap_buffer (filter->va_display, op_data->va_buffer, NULL);
-  return TRUE;
+    if (!op_ensure_n_elements_buffer (filter, op_data, COLOR_BALANCE_NUM))
+      return FALSE;
+
+    enabled_data = op_data;
+
+    buf = vaapi_map_buffer (filter->va_display, enabled_data->va_buffer);
+    if (!buf)
+      return FALSE;
+
+    /* Write all the color balance operator values in the buffer. --
+     * Use the default value for all the operators except the set
+     * one. */
+    for (i = 0; i < COLOR_BALANCE_NUM; i++) {
+      buf[i].type = color_data[i]->va_type;
+      buf[i].attrib = color_data[i]->va_subtype;
+
+      va_value = OP_DATA_DEFAULT_VALUE (float, color_data[i]);
+      if (color_data[i]->op == op_data->op) {
+        filter_cap = color_data[i]->va_caps;
+        /* fail but ignore current value and set default one */
+        if (!op_data_get_value_float (color_data[i], &filter_cap->range, value,
+                &va_value))
+          ret = FALSE;
+      }
+
+      buf[i].value = va_value;
+    }
+
+    enabled_data->is_enabled = 1;
+  } else {
+    /* There's already one operator enabled, *in theory* with a
+     * buffer associated. */
+    if (G_UNLIKELY (enabled_data->va_buffer == VA_INVALID_ID))
+      return FALSE;
+
+    filter_cap = op_data->va_caps;
+    if (!op_data_get_value_float (op_data, &filter_cap->range, value,
+            &va_value))
+      return FALSE;
+
+    buf = vaapi_map_buffer (filter->va_display, enabled_data->va_buffer);
+    if (!buf)
+      return FALSE;
+
+    buf[op_data->op - GST_VAAPI_FILTER_OP_HUE].value = va_value;
+  }
+
+  vaapi_unmap_buffer (filter->va_display, enabled_data->va_buffer, NULL);
+
+  return ret;
 }
-#endif
 
 static inline gboolean
 op_set_color_balance (GstVaapiFilter * filter, GstVaapiFilterOpData * op_data,
@@ -869,16 +997,13 @@ op_set_color_balance (GstVaapiFilter * filter, GstVaapiFilterOpData * op_data,
 {
   gboolean success = FALSE;
 
-#if USE_VA_VPP
   GST_VAAPI_DISPLAY_LOCK (filter->display);
   success = op_set_color_balance_unlocked (filter, op_data, value);
   GST_VAAPI_DISPLAY_UNLOCK (filter->display);
-#endif
   return success;
 }
 
 /* Update deinterlace filter */
-#if USE_VA_VPP
 static gboolean
 op_set_deinterlace_unlocked (GstVaapiFilter * filter,
     GstVaapiFilterOpData * op_data, GstVaapiDeinterlaceMethod method,
@@ -914,7 +1039,6 @@ op_set_deinterlace_unlocked (GstVaapiFilter * filter,
   vaapi_unmap_buffer (filter->va_display, op_data->va_buffer, NULL);
   return TRUE;
 }
-#endif
 
 static inline gboolean
 op_set_deinterlace (GstVaapiFilter * filter, GstVaapiFilterOpData * op_data,
@@ -922,38 +1046,61 @@ op_set_deinterlace (GstVaapiFilter * filter, GstVaapiFilterOpData * op_data,
 {
   gboolean success = FALSE;
 
-#if USE_VA_VPP
   GST_VAAPI_DISPLAY_LOCK (filter->display);
   success = op_set_deinterlace_unlocked (filter, op_data, method, flags);
   GST_VAAPI_DISPLAY_UNLOCK (filter->display);
-#endif
   return success;
 }
 
-/* Update skin tone enhancement */
-#if USE_VA_VPP
+/* Update skin tone enhancement level */
 static gboolean
-op_set_skintone_unlocked (GstVaapiFilter * filter,
-    GstVaapiFilterOpData * op_data, gboolean value)
+op_set_skintone_level_unlocked (GstVaapiFilter * filter,
+    GstVaapiFilterOpData * op_data, guint value)
 {
   VAProcFilterParameterBuffer *buf;
 
   if (!op_data || !op_ensure_buffer (filter, op_data))
     return FALSE;
 
-  op_data->is_enabled = value;
-  if (!op_data->is_enabled)
-    return TRUE;
+  op_data->is_enabled = 1;
 
   buf = vaapi_map_buffer (filter->va_display, op_data->va_buffer);
   if (!buf)
     return FALSE;
   buf->type = op_data->va_type;
-  buf->value = 0;
+  buf->value = value;
   vaapi_unmap_buffer (filter->va_display, op_data->va_buffer, NULL);
   return TRUE;
 }
-#endif
+
+static inline gboolean
+op_set_skintone_level (GstVaapiFilter * filter,
+    GstVaapiFilterOpData * op_data, guint value)
+{
+  gboolean success = FALSE;
+
+  GST_VAAPI_DISPLAY_LOCK (filter->display);
+  success = op_set_skintone_level_unlocked (filter, op_data, value);
+  GST_VAAPI_DISPLAY_UNLOCK (filter->display);
+  return success;
+}
+
+#ifndef GST_REMOVE_DEPRECATED
+/* Update skin tone enhancement */
+static gboolean
+op_set_skintone_unlocked (GstVaapiFilter * filter,
+    GstVaapiFilterOpData * op_data, gboolean value)
+{
+  if (!op_data)
+    return FALSE;
+
+  if (!value) {
+    op_data->is_enabled = 0;
+    return TRUE;
+  }
+
+  return op_set_skintone_level_unlocked (filter, op_data, 3);
+}
 
 static inline gboolean
 op_set_skintone (GstVaapiFilter * filter, GstVaapiFilterOpData * op_data,
@@ -961,14 +1108,12 @@ op_set_skintone (GstVaapiFilter * filter, GstVaapiFilterOpData * op_data,
 {
   gboolean success = FALSE;
 
-#if USE_VA_VPP
   GST_VAAPI_DISPLAY_LOCK (filter->display);
   success = op_set_skintone_unlocked (filter, op_data, enhance);
   GST_VAAPI_DISPLAY_UNLOCK (filter->display);
-#endif
   return success;
 }
-
+#endif
 
 static gboolean
 deint_refs_set (GArray * refs, GstVaapiSurface ** surfaces, guint num_surfaces)
@@ -998,18 +1143,18 @@ deint_refs_clear_all (GstVaapiFilter * filter)
 }
 
 /* ------------------------------------------------------------------------- */
-/* --- Surface Formats                                                   --- */
+/* --- Surface Attribs                                                   --- */
 /* ------------------------------------------------------------------------- */
 
 static gboolean
-ensure_formats (GstVaapiFilter * filter)
+ensure_attributes (GstVaapiFilter * filter)
 {
-  if (G_LIKELY (filter->formats))
+  if (G_LIKELY (filter->attribs))
     return TRUE;
 
-  filter->formats = gst_vaapi_get_surface_formats (filter->display,
+  filter->attribs = gst_vaapi_config_surface_attributes_get (filter->display,
       filter->va_config);
-  return (filter->formats != NULL);
+  return (filter->attribs != NULL);
 }
 
 static inline gboolean
@@ -1023,12 +1168,14 @@ static gboolean
 find_format (GstVaapiFilter * filter, GstVideoFormat format)
 {
   guint i;
+  GArray *formats;
 
-  if (is_special_format (format) || !filter->formats)
+  formats = filter->attribs->formats;
+  if (is_special_format (format) || !formats)
     return FALSE;
 
-  for (i = 0; i < filter->formats->len; i++) {
-    if (g_array_index (filter->formats, GstVideoFormat, i) == format)
+  for (i = 0; i < formats->len; i++) {
+    if (g_array_index (formats, GstVideoFormat, i) == format)
       return TRUE;
   }
   return FALSE;
@@ -1038,7 +1185,6 @@ find_format (GstVaapiFilter * filter, GstVideoFormat format)
 /* --- Interface                                                         --- */
 /* ------------------------------------------------------------------------- */
 
-#if USE_VA_VPP
 static void
 gst_vaapi_filter_init (GstVaapiFilter * filter)
 {
@@ -1112,9 +1258,9 @@ gst_vaapi_filter_finalize (GObject * object)
     filter->backward_references = NULL;
   }
 
-  if (filter->formats) {
-    g_array_unref (filter->formats);
-    filter->formats = NULL;
+  if (filter->attribs) {
+    gst_vaapi_config_surface_attributes_free (filter->attribs);
+    filter->attribs = NULL;
   }
 
   G_OBJECT_CLASS (gst_vaapi_filter_parent_class)->finalize (object);
@@ -1179,7 +1325,6 @@ gst_vaapi_filter_class_init (GstVaapiFilterClass * klass)
           "The VA-API display object to use", GST_TYPE_VAAPI_DISPLAY,
           G_PARAM_READWRITE | G_PARAM_CONSTRUCT_ONLY | G_PARAM_STATIC_NAME));
 }
-#endif
 
 /**
  * gst_vaapi_filter_new:
@@ -1193,7 +1338,6 @@ gst_vaapi_filter_class_init (GstVaapiFilterClass * klass)
 GstVaapiFilter *
 gst_vaapi_filter_new (GstVaapiDisplay * display)
 {
-#if USE_VA_VPP
   GstVaapiFilter *filter;
 
   filter = g_object_new (GST_TYPE_VAAPI_FILTER, "display", display, NULL);
@@ -1207,11 +1351,6 @@ error:
     gst_object_unref (filter);
     return NULL;
   }
-#else
-  GST_WARNING ("video processing is not supported, "
-      "please consider an upgrade to VA-API >= 0.34");
-  return NULL;
-#endif
 }
 
 /**
@@ -1321,7 +1460,6 @@ gboolean
 gst_vaapi_filter_set_operation (GstVaapiFilter * filter, GstVaapiFilterOp op,
     const GValue * value)
 {
-#if USE_VA_VPP
   GstVaapiFilterOpData *op_data;
 
   g_return_val_if_fail (filter != NULL, FALSE);
@@ -1344,30 +1482,40 @@ gst_vaapi_filter_set_operation (GstVaapiFilter * filter, GstVaapiFilterOp op,
     case GST_VAAPI_FILTER_OP_SHARPEN:
       return op_set_generic (filter, op_data,
           (value ? g_value_get_float (value) :
-              G_PARAM_SPEC_FLOAT (op_data->pspec)->default_value));
+              OP_DATA_DEFAULT_VALUE (float, op_data)));
     case GST_VAAPI_FILTER_OP_HUE:
     case GST_VAAPI_FILTER_OP_SATURATION:
     case GST_VAAPI_FILTER_OP_BRIGHTNESS:
     case GST_VAAPI_FILTER_OP_CONTRAST:
       return op_set_color_balance (filter, op_data,
           (value ? g_value_get_float (value) :
-              G_PARAM_SPEC_FLOAT (op_data->pspec)->default_value));
+              OP_DATA_DEFAULT_VALUE (float, op_data)));
     case GST_VAAPI_FILTER_OP_DEINTERLACING:
       return op_set_deinterlace (filter, op_data,
           (value ? g_value_get_enum (value) :
-              G_PARAM_SPEC_ENUM (op_data->pspec)->default_value), 0);
+              OP_DATA_DEFAULT_VALUE (enum, op_data)), 0);
       break;
     case GST_VAAPI_FILTER_OP_SCALING:
-      return gst_vaapi_filter_set_scaling (filter, value ?
-          g_value_get_enum (value) : DEFAULT_SCALING);
+      return gst_vaapi_filter_set_scaling (filter,
+          (value ? g_value_get_enum (value) :
+              OP_DATA_DEFAULT_VALUE (enum, op_data)));
+#ifndef GST_REMOVE_DEPRECATED
     case GST_VAAPI_FILTER_OP_SKINTONE:
       return op_set_skintone (filter, op_data,
           (value ? g_value_get_boolean (value) :
-              G_PARAM_SPEC_BOOLEAN (op_data->pspec)->default_value));
+              OP_DATA_DEFAULT_VALUE (boolean, op_data)));
+#endif
+    case GST_VAAPI_FILTER_OP_SKINTONE_LEVEL:
+      return op_set_skintone_level (filter, op_data,
+          (value ? g_value_get_uint (value) :
+              OP_DATA_DEFAULT_VALUE (uint, op_data)));
+    case GST_VAAPI_FILTER_OP_VIDEO_DIRECTION:
+      return gst_vaapi_filter_set_video_direction (filter,
+          (value ? g_value_get_enum (value) :
+              OP_DATA_DEFAULT_VALUE (enum, op_data)));
     default:
       break;
   }
-#endif
   return FALSE;
 }
 
@@ -1390,7 +1538,6 @@ static GstVaapiFilterStatus
 gst_vaapi_filter_process_unlocked (GstVaapiFilter * filter,
     GstVaapiSurface * src_surface, GstVaapiSurface * dst_surface, guint flags)
 {
-#if USE_VA_VPP
   VAProcPipelineParameterBuffer *pipeline_param = NULL;
   VABufferID pipeline_param_buf_id = VA_INVALID_ID;
   VABufferID filters[N_PROPERTIES];
@@ -1398,6 +1545,7 @@ gst_vaapi_filter_process_unlocked (GstVaapiFilter * filter,
   guint i, num_filters = 0;
   VAStatus va_status;
   VARectangle src_rect, dst_rect;
+  guint va_mirror = 0, va_rotation = 0;
 
   if (!ensure_operations (filter))
     return GST_VAAPI_FILTER_STATUS_ERROR_ALLOCATION_FAILED;
@@ -1480,6 +1628,14 @@ gst_vaapi_filter_process_unlocked (GstVaapiFilter * filter,
   pipeline_param->filters = filters;
   pipeline_param->num_filters = num_filters;
 
+  from_GstVideoOrientationMethod (filter->video_direction, &va_mirror,
+      &va_rotation);
+
+#if VA_CHECK_VERSION(1,1,0)
+  pipeline_param->mirror_state = va_mirror;
+  pipeline_param->rotation_state = va_rotation;
+#endif
+
   // Reference frames for advanced deinterlacing
   if (filter->forward_references->len > 0) {
     pipeline_param->forward_references = (VASurfaceID *)
@@ -1530,8 +1686,6 @@ error:
     vaapi_destroy_buffer (filter->va_display, &pipeline_param_buf_id);
     return GST_VAAPI_FILTER_STATUS_ERROR_OPERATION_FAILED;
   }
-#endif
-  return GST_VAAPI_FILTER_STATUS_ERROR_UNSUPPORTED_OPERATION;
 }
 
 GstVaapiFilterStatus
@@ -1570,9 +1724,11 @@ gst_vaapi_filter_get_formats (GstVaapiFilter * filter)
 {
   g_return_val_if_fail (filter != NULL, NULL);
 
-  if (!ensure_formats (filter))
+  if (!ensure_attributes (filter))
     return NULL;
-  return g_array_ref (filter->formats);
+  if (filter->attribs->formats)
+    return g_array_ref (filter->attribs->formats);
+  return NULL;
 }
 
 /**
@@ -1598,7 +1754,7 @@ gst_vaapi_filter_set_format (GstVaapiFilter * filter, GstVideoFormat format)
 {
   g_return_val_if_fail (filter != NULL, FALSE);
 
-  if (!ensure_formats (filter))
+  if (!ensure_attributes (filter))
     return FALSE;
 
   if (!is_special_format (format) && !find_format (filter, format))
@@ -1606,6 +1762,43 @@ gst_vaapi_filter_set_format (GstVaapiFilter * filter, GstVideoFormat format)
 
   filter->format = format;
   return TRUE;
+}
+
+/**
+ * gst_vaapi_filter_append_caps:
+ * @filter: a #GstVaapiFilter
+ * @structure: a #GstStructure from #GstCaps
+ *
+ * Extracts the config's surface attributes, from @filter's context,
+ * and transforms it into a caps formats and appended them into
+ * @structure.
+ *
+ * Returns: %TRUE if the capabilities could be extracted and appended
+ * into @structure; otherwise %FALSE
+ **/
+gboolean
+gst_vaapi_filter_append_caps (GstVaapiFilter * filter, GstStructure * structure)
+{
+  GstVaapiConfigSurfaceAttributes *attribs;
+
+  g_return_val_if_fail (filter != NULL, FALSE);
+  g_return_val_if_fail (structure != NULL, FALSE);
+
+  if (!ensure_attributes (filter))
+    return FALSE;
+
+  attribs = filter->attribs;
+
+  if (attribs->min_width >= attribs->max_width ||
+      attribs->min_height >= attribs->max_height)
+    return FALSE;
+
+  gst_structure_set (structure, "width", GST_TYPE_INT_RANGE, attribs->min_width,
+      attribs->max_width, "height", GST_TYPE_INT_RANGE, attribs->min_height,
+      attribs->max_height, NULL);
+
+  return TRUE;
+
 }
 
 /**
@@ -1857,6 +2050,7 @@ gst_vaapi_filter_set_scaling (GstVaapiFilter * filter,
   return TRUE;
 }
 
+#ifndef GST_REMOVE_DEPRECATED
 /**
  * gst_vaapi_filter_set_skintone:
  * @filter: a #GstVaapiFilter
@@ -1875,84 +2069,135 @@ gst_vaapi_filter_set_skintone (GstVaapiFilter * filter, gboolean enhance)
   return op_set_skintone (filter,
       find_operation (filter, GST_VAAPI_FILTER_OP_SKINTONE), enhance);
 }
-
-static inline gfloat
-op_get_float_default_value (GstVaapiFilter * filter,
-    GstVaapiFilterOpData * op_data)
-{
-#if USE_VA_VPP
-  GParamSpecFloat *const pspec = G_PARAM_SPEC_FLOAT (op_data->pspec);
-  return pspec->default_value;
 #endif
-  return 0.0;
+
+/**
+ * gst_vaapi_filter_set_skintone_level:
+ * @filter: a #GstVaapiFilter
+ * @value: the value if enable the skin tone enhancement algorithm
+ *
+ * Applies the skin tone enhancement algorithm with specifled value.
+ *
+ * Return value: %TRUE if the operation is supported, %FALSE
+ * otherwise.
+  **/
+gboolean
+gst_vaapi_filter_set_skintone_level (GstVaapiFilter * filter, guint value)
+{
+  g_return_val_if_fail (filter != NULL, FALSE);
+
+  return op_set_skintone_level (filter,
+      find_operation (filter, GST_VAAPI_FILTER_OP_SKINTONE_LEVEL), value);
+}
+
+/**
+ * gst_vaapi_filter_set_video_direction:
+ * @filter: a #GstVaapiFilter
+ * @method: the video direction (see #GstVideoOrientationMethod)
+ *
+ * Applies mirror/rotation to the video processing pipeline.
+ *
+ * Return value: %TRUE if the operation is supported, %FALSE otherwise.
+ */
+gboolean
+gst_vaapi_filter_set_video_direction (GstVaapiFilter * filter,
+    GstVideoOrientationMethod method)
+{
+  g_return_val_if_fail (filter != NULL, FALSE);
+
+#if VA_CHECK_VERSION(1,1,0)
+  {
+    guint32 va_mirror = VA_MIRROR_NONE;
+    guint32 va_rotation = VA_ROTATION_NONE;
+
+    from_GstVideoOrientationMethod (method, &va_mirror, &va_rotation);
+
+    if (va_mirror != VA_MIRROR_NONE && !(filter->mirror_flags & va_mirror))
+      return FALSE;
+
+    if (va_rotation != VA_ROTATION_NONE
+        && !(filter->rotation_flags & (1 << va_rotation)))
+      return FALSE;
+  }
+#else
+  return FALSE;
+#endif
+
+  filter->video_direction = method;
+  return TRUE;
+}
+
+/**
+ * gst_vaapi_filter_get_video_direction:
+ * @filter: a #GstVaapiFilter
+ *
+ * Return value: the currently applied video direction (see #GstVideoOrientationMethod)
+ */
+GstVideoOrientationMethod
+gst_vaapi_filter_get_video_direction (GstVaapiFilter * filter)
+{
+  g_return_val_if_fail (filter != NULL, GST_VIDEO_ORIENTATION_IDENTITY);
+  return filter->video_direction;
 }
 
 gfloat
 gst_vaapi_filter_get_denoising_level_default (GstVaapiFilter * filter)
 {
-  g_return_val_if_fail (filter != NULL, FALSE);
-
-  return op_get_float_default_value (filter,
-      find_operation (filter, GST_VAAPI_FILTER_OP_DENOISE));
+  OP_RET_DEFAULT_VALUE (float, filter, GST_VAAPI_FILTER_OP_DENOISE);
 }
 
 gfloat
 gst_vaapi_filter_get_sharpening_level_default (GstVaapiFilter * filter)
 {
-  g_return_val_if_fail (filter != NULL, FALSE);
-
-  return op_get_float_default_value (filter,
-      find_operation (filter, GST_VAAPI_FILTER_OP_SHARPEN));
+  OP_RET_DEFAULT_VALUE (float, filter, GST_VAAPI_FILTER_OP_SHARPEN);
 }
 
 gfloat
 gst_vaapi_filter_get_hue_default (GstVaapiFilter * filter)
 {
-  g_return_val_if_fail (filter != NULL, FALSE);
-
-  return op_get_float_default_value (filter,
-      find_operation (filter, GST_VAAPI_FILTER_OP_HUE));
+  OP_RET_DEFAULT_VALUE (float, filter, GST_VAAPI_FILTER_OP_HUE);
 }
 
 gfloat
 gst_vaapi_filter_get_saturation_default (GstVaapiFilter * filter)
 {
-  g_return_val_if_fail (filter != NULL, FALSE);
-
-  return op_get_float_default_value (filter,
-      find_operation (filter, GST_VAAPI_FILTER_OP_SATURATION));
+  OP_RET_DEFAULT_VALUE (float, filter, GST_VAAPI_FILTER_OP_SATURATION);
 }
 
 gfloat
 gst_vaapi_filter_get_brightness_default (GstVaapiFilter * filter)
 {
-  g_return_val_if_fail (filter != NULL, FALSE);
-
-  return op_get_float_default_value (filter,
-      find_operation (filter, GST_VAAPI_FILTER_OP_BRIGHTNESS));
+  OP_RET_DEFAULT_VALUE (float, filter, GST_VAAPI_FILTER_OP_BRIGHTNESS);
 }
 
 gfloat
 gst_vaapi_filter_get_contrast_default (GstVaapiFilter * filter)
 {
-  g_return_val_if_fail (filter != NULL, FALSE);
-
-  return op_get_float_default_value (filter,
-      find_operation (filter, GST_VAAPI_FILTER_OP_CONTRAST));
+  OP_RET_DEFAULT_VALUE (float, filter, GST_VAAPI_FILTER_OP_CONTRAST);
 }
 
 GstVaapiScaleMethod
 gst_vaapi_filter_get_scaling_default (GstVaapiFilter * filter)
 {
-  g_return_val_if_fail (filter != NULL, FALSE);
-
-  return DEFAULT_SCALING;
+  OP_RET_DEFAULT_VALUE (enum, filter, GST_VAAPI_FILTER_OP_SCALING);
 }
 
+#ifndef GST_REMOVE_DEPRECATED
 gboolean
 gst_vaapi_filter_get_skintone_default (GstVaapiFilter * filter)
 {
-  g_return_val_if_fail (filter != NULL, FALSE);
+  OP_RET_DEFAULT_VALUE (boolean, filter, GST_VAAPI_FILTER_OP_SKINTONE);
+}
+#endif
 
-  return FALSE;
+guint
+gst_vaapi_filter_get_skintone_level_default (GstVaapiFilter * filter)
+{
+  OP_RET_DEFAULT_VALUE (uint, filter, GST_VAAPI_FILTER_OP_SKINTONE_LEVEL);
+}
+
+GstVideoOrientationMethod
+gst_vaapi_filter_get_video_direction_default (GstVaapiFilter * filter)
+{
+  OP_RET_DEFAULT_VALUE (enum, filter, GST_VAAPI_FILTER_OP_VIDEO_DIRECTION);
 }

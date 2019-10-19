@@ -289,7 +289,6 @@ gst_vaapi_enc_q_matrix_new (GstVaapiEncoder * encoder,
 /* --- JPEG Huffman Tables                                               --- */
 /* ------------------------------------------------------------------------- */
 
-#if USE_JPEG_ENCODER
 GST_VAAPI_CODEC_DEFINE_TYPE (GstVaapiEncHuffmanTable,
     gst_vaapi_enc_huffman_table);
 
@@ -322,7 +321,6 @@ gst_vaapi_enc_huffman_table_new (GstVaapiEncoder * encoder,
     return NULL;
   return GST_VAAPI_ENC_HUFFMAN_TABLE_CAST (object);
 }
-#endif
 
 /* ------------------------------------------------------------------------- */
 /* --- Encoder Picture                                                   --- */
@@ -557,6 +555,10 @@ gst_vaapi_enc_picture_encode (GstVaapiEncPicture * picture)
       return FALSE;
   }
 
+  /* Submit Picture parameter */
+  if (!do_encode (va_display, va_context, &picture->param_id, &picture->param))
+    return FALSE;
+
   /* Submit Misc Params */
   for (i = 0; i < picture->misc_params->len; i++) {
     GstVaapiEncMiscParam *const misc =
@@ -564,10 +566,6 @@ gst_vaapi_enc_picture_encode (GstVaapiEncPicture * picture)
     if (!do_encode (va_display, va_context, &misc->param_id, &misc->param))
       return FALSE;
   }
-
-  /* Submit Picture parameter */
-  if (!do_encode (va_display, va_context, &picture->param_id, &picture->param))
-    return FALSE;
 
   /* Submit Slice parameters */
   for (i = 0; i < picture->slices->len; i++) {

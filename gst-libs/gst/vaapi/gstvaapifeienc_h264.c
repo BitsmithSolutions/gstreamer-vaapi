@@ -184,7 +184,7 @@ h264_get_cpb_nal_factor (GstVaapiProfile profile)
 /* --- FEI Enc                                                           --- */
 /* ------------------------------------------------------------------------- */
 
-#define GST_VAAPI_FEI_H264_ENC_CAST(feienc) \
+#define GST_VAAPI_FEI_ENC_H264_CAST(feienc) \
     ((GstVaapiFeiEncH264 *)(feienc))
 
 struct _GstVaapiFeiEncH264
@@ -641,7 +641,6 @@ fill_sequence (GstVaapiFeiEncH264 * feienc, GstVaapiEncSequence * sequence)
   seq_param->level_idc = feienc->level_idc;
   seq_param->intra_period = GST_VAAPI_ENCODER_KEYFRAME_PERIOD (feienc);
   seq_param->intra_idr_period = GST_VAAPI_ENCODER_KEYFRAME_PERIOD (feienc);
-  seq_param->ip_period = 1 + feienc->num_bframes;
   seq_param->ip_period = seq_param->intra_period > 1 ?
       (1 + feienc->num_bframes) : 0;
   seq_param->bits_per_second = feienc->bitrate_bits;
@@ -1381,7 +1380,7 @@ gst_vaapi_feienc_h264_encode (GstVaapiEncoder * base_encoder,
     GstVaapiCodedBufferProxy * codedbuf_proxy,
     GstVaapiFeiInfoToPakH264 * info_to_pak)
 {
-  GstVaapiFeiEncH264 *const feienc = GST_VAAPI_FEI_H264_ENC_CAST (base_encoder);
+  GstVaapiFeiEncH264 *const feienc = GST_VAAPI_FEI_ENC_H264_CAST (base_encoder);
   GstVaapiEncoderStatus ret = GST_VAAPI_ENCODER_STATUS_ERROR_UNKNOWN;
 
   if (!reconstruct || !codedbuf_proxy)
@@ -1411,7 +1410,7 @@ error:
 GstVaapiEncoderStatus
 gst_vaapi_feienc_h264_flush (GstVaapiEncoder * base_encoder)
 {
-  GstVaapiFeiEncH264 *const feienc = GST_VAAPI_FEI_H264_ENC_CAST (base_encoder);
+  GstVaapiFeiEncH264 *const feienc = GST_VAAPI_FEI_ENC_H264_CAST (base_encoder);
   GstVaapiH264ViewReorderPool *reorder_pool;
   GstVaapiEncPicture *pic;
   guint i;
@@ -1445,7 +1444,7 @@ GstVaapiEncoderStatus
 gst_vaapi_feienc_h264_reordering (GstVaapiEncoder * base_encoder,
     GstVideoCodecFrame * frame, GstVaapiEncPicture ** output)
 {
-  GstVaapiFeiEncH264 *const feienc = GST_VAAPI_FEI_H264_ENC_CAST (base_encoder);
+  GstVaapiFeiEncH264 *const feienc = GST_VAAPI_FEI_ENC_H264_CAST (base_encoder);
   GstVaapiH264ViewReorderPool *reorder_pool = NULL;
   GstVaapiEncPicture *picture;
   gboolean is_idr = FALSE;
@@ -1555,7 +1554,7 @@ end:
 static GstVaapiEncoderStatus
 set_context_info (GstVaapiEncoder * base_encoder)
 {
-  GstVaapiFeiEncH264 *const feienc = GST_VAAPI_FEI_H264_ENC_CAST (base_encoder);
+  GstVaapiFeiEncH264 *const feienc = GST_VAAPI_FEI_ENC_H264_CAST (base_encoder);
   GstVideoInfo *const vip = GST_VAAPI_ENCODER_VIDEO_INFO (feienc);
   const guint DEFAULT_SURFACES_COUNT = 3;
 
@@ -1602,7 +1601,7 @@ set_context_info (GstVaapiEncoder * base_encoder)
 GstVaapiEncoderStatus
 gst_vaapi_feienc_h264_reconfigure (GstVaapiEncoder * base_encoder)
 {
-  GstVaapiFeiEncH264 *const feienc = GST_VAAPI_FEI_H264_ENC_CAST (base_encoder);
+  GstVaapiFeiEncH264 *const feienc = GST_VAAPI_FEI_ENC_H264_CAST (base_encoder);
   GstVideoInfo *const vip = GST_VAAPI_ENCODER_VIDEO_INFO (feienc);
   GstVaapiEncoderStatus status;
   guint mb_width, mb_height;
@@ -1638,10 +1637,17 @@ gst_vaapi_feienc_h264_reconfigure (GstVaapiEncoder * base_encoder)
   return GST_VAAPI_ENCODER_STATUS_SUCCESS;
 }
 
-static gboolean
-gst_vaapi_feienc_h264_init (GstVaapiEncoder * base_encoder)
+struct _GstVaapiFeiEncH264Class
 {
-  GstVaapiFeiEncH264 *const feienc = GST_VAAPI_FEI_H264_ENC_CAST (base_encoder);
+  GstVaapiEncoderClass parent_class;
+};
+
+G_DEFINE_TYPE (GstVaapiFeiEncH264, gst_vaapi_feienc_h264,
+    GST_TYPE_VAAPI_ENCODER);
+
+static void
+gst_vaapi_feienc_h264_init (GstVaapiFeiEncH264 * feienc)
+{
   guint32 i;
 
   /* Default encoding entrypoint */
@@ -1673,15 +1679,13 @@ gst_vaapi_feienc_h264_init (GstVaapiEncoder * base_encoder)
     reorder_pool->cur_frame_num = 0;
     reorder_pool->cur_present_index = 0;
   }
-
-  return TRUE;
 }
 
 static void
-gst_vaapi_feienc_h264_finalize (GstVaapiEncoder * base_encoder)
+gst_vaapi_feienc_h264_finalize (GObject * object)
 {
   /*free private buffers */
-  GstVaapiFeiEncH264 *const feienc = GST_VAAPI_FEI_H264_ENC_CAST (base_encoder);
+  GstVaapiFeiEncH264 *const feienc = GST_VAAPI_FEI_ENC_H264 (object);
   GstVaapiEncPicture *pic;
   guint32 i;
 
@@ -1699,108 +1703,313 @@ gst_vaapi_feienc_h264_finalize (GstVaapiEncoder * base_encoder)
     }
     g_queue_clear (&reorder_pool->reorder_frame_list);
   }
+
+  G_OBJECT_CLASS (gst_vaapi_feienc_h264_parent_class)->finalize (object);
 }
 
-GstVaapiEncoderStatus
-gst_vaapi_feienc_h264_set_property (GstVaapiEncoder * base_encoder,
-    gint prop_id, const GValue * value)
+static void
+set_view_ids (GstVaapiFeiEncH264 * const encoder, const GValue * value)
 {
-  GstVaapiFeiEncH264 *const feienc = GST_VAAPI_FEI_H264_ENC_CAST (base_encoder);
+  guint i, j;
+  guint len = gst_value_array_get_size (value);
+
+  if (len == 0)
+    goto set_default_ids;
+
+  if (len != encoder->num_views) {
+    GST_WARNING ("The view number is %d, but %d view IDs are provided. Just "
+        "fallback to use default view IDs.", encoder->num_views, len);
+    goto set_default_ids;
+  }
+
+  for (i = 0; i < len; i++) {
+    const GValue *val = gst_value_array_get_value (value, i);
+    encoder->view_ids[i] = g_value_get_uint (val);
+  }
+
+  /* check whether duplicated ID */
+  for (i = 0; i < len; i++) {
+    for (j = i + 1; j < len; j++) {
+      if (encoder->view_ids[i] == encoder->view_ids[j]) {
+        GST_WARNING ("The view %d and view %d have same view ID %d. Just "
+            "fallback to use default view IDs.", i, j, encoder->view_ids[i]);
+        goto set_default_ids;
+      }
+    }
+  }
+
+  return;
+
+set_default_ids:
+  {
+    for (i = 0; i < encoder->num_views; i++)
+      encoder->view_ids[i] = i;
+  }
+}
+
+static void
+get_view_ids (GstVaapiFeiEncH264 * const encoder, GValue * value)
+{
+  guint i;
+  GValue id = G_VALUE_INIT;
+
+  g_value_reset (value);
+  g_value_init (&id, G_TYPE_UINT);
+
+  for (i = 0; i < encoder->num_views; i++) {
+    g_value_set_uint (&id, encoder->view_ids[i]);
+    gst_value_array_append_value (value, &id);
+  }
+  g_value_unset (&id);
+}
+
+/**
+ * @FEI_H264_ENC_PROP_RATECONTROL: Rate control (#GstVaapiRateControl).
+ * @FEI_H264_ENC_PROP_TUNE: The tuning options (#GstVaapiEncoderTune).
+ * @FEI_H264_ENC_PROP_MAX_BFRAMES: Number of B-frames between I
+ *   and P (uint).
+ * @FEI_H264_ENC_PROP_INIT_QP: Initial quantizer value (uint).
+ * @FEI_H264_ENC_PROP_MIN_QP: Minimal quantizer value (uint).
+ * @FEI_H264_ENC_PROP_NUM_SLICES: Number of slices per frame (uint).
+ * @FEI_H264_ENC_PROP_CABAC: Enable CABAC entropy coding mode (bool).
+ * @FEI_H264_ENC_PROP_DCT8X8: Enable adaptive use of 8x8
+ *   transforms in I-frames (bool).
+ * @FEI_H264_ENC_PROP_CPB_LENGTH: Length of the CPB buffer
+ *   in milliseconds (uint).
+ * @FEI_H264_ENC_PROP_NUM_VIEWS: Number of views per frame.
+ * @FEI_H264_ENC_PROP_VIEW_IDS: View IDs
+ *
+ * The set of FEI Enc specific configurable properties.
+ */
+enum
+{
+  FEI_H264_ENC_PROP_RATECONTROL = 1,
+  FEI_H264_ENC_PROP_TUNE,
+  FEI_H264_ENC_PROP_MAX_BFRAMES,
+  FEI_H264_ENC_PROP_INIT_QP,
+  FEI_H264_ENC_PROP_MIN_QP,
+  FEI_H264_ENC_PROP_NUM_SLICES,
+  FEI_H264_ENC_PROP_CABAC,
+  FEI_H264_ENC_PROP_DCT8X8,
+  FEI_H264_ENC_PROP_CPB_LENGTH,
+  FEI_H264_ENC_PROP_NUM_VIEWS,
+  FEI_H264_ENC_PROP_VIEW_IDS,
+  FEI_H264_ENC_PROP_NUM_REF,
+  FEI_H264_ENC_PROP_FEI_ENABLE,
+  FEI_H264_ENC_PROP_NUM_MV_PREDICT_L0,
+  FEI_H264_ENC_PROP_NUM_MV_PREDICT_L1,
+  FEI_H264_ENC_PROP_SEARCH_WINDOW,
+  FEI_H264_ENC_PROP_LEN_SP,
+  FEI_H264_ENC_PROP_SEARCH_PATH,
+  FEI_H264_ENC_PROP_REF_WIDTH,
+  FEI_H264_ENC_PROP_REF_HEIGHT,
+  FEI_H264_ENC_PROP_SUBMB_MASK,
+  FEI_H264_ENC_PROP_SUBPEL_MODE,
+  FEI_H264_ENC_PROP_INTRA_PART_MASK,
+  FEI_H264_ENC_PROP_INTRA_SAD,
+  FEI_H264_ENC_PROP_INTER_SAD,
+  FEI_H264_ENC_PROP_ADAPT_SEARCH,
+  FEI_H264_ENC_PROP_MULTI_PRED_L0,
+  FEI_H264_ENC_PROP_MULTI_PRED_L1,
+  FEI_H264_ENC_PROP_ENABLE_STATS_OUT,
+  FEI_H264_ENC_N_PROPERTIES
+};
+
+static GParamSpec *properties[FEI_H264_ENC_N_PROPERTIES];
+
+static void
+gst_vaapi_feienc_h264_set_property (GObject * object, guint prop_id,
+    const GValue * value, GParamSpec * pspec)
+{
+  GstVaapiEncoder *const base_encoder = GST_VAAPI_ENCODER (object);
+  GstVaapiFeiEncH264 *const feienc = GST_VAAPI_FEI_ENC_H264_CAST (base_encoder);
+
+  if (base_encoder->num_codedbuf_queued > 0) {
+    GST_ERROR_OBJECT (object,
+        "failed to set any property after encoding started");
+    return;
+  }
 
   switch (prop_id) {
-    case GST_VAAPI_FEI_H264_ENC_PROP_MAX_BFRAMES:
+    case FEI_H264_ENC_PROP_RATECONTROL:
+      gst_vaapi_encoder_set_rate_control (base_encoder,
+          g_value_get_enum (value));
+      break;
+    case FEI_H264_ENC_PROP_TUNE:
+      gst_vaapi_encoder_set_tuning (base_encoder, g_value_get_enum (value));
+      break;
+    case FEI_H264_ENC_PROP_MAX_BFRAMES:
       feienc->num_bframes = g_value_get_uint (value);
       break;
-    case GST_VAAPI_FEI_H264_ENC_PROP_INIT_QP:
+    case FEI_H264_ENC_PROP_INIT_QP:
       feienc->init_qp = g_value_get_uint (value);
       break;
-    case GST_VAAPI_FEI_H264_ENC_PROP_MIN_QP:
+    case FEI_H264_ENC_PROP_MIN_QP:
       feienc->min_qp = g_value_get_uint (value);
       break;
-    case GST_VAAPI_FEI_H264_ENC_PROP_NUM_SLICES:
+    case FEI_H264_ENC_PROP_NUM_SLICES:
       feienc->num_slices = g_value_get_uint (value);
       break;
-    case GST_VAAPI_FEI_H264_ENC_PROP_CABAC:
+    case FEI_H264_ENC_PROP_CABAC:
       feienc->use_cabac = g_value_get_boolean (value);
       break;
-    case GST_VAAPI_FEI_H264_ENC_PROP_DCT8X8:
+    case FEI_H264_ENC_PROP_DCT8X8:
       feienc->use_dct8x8 = g_value_get_boolean (value);
       break;
-    case GST_VAAPI_FEI_H264_ENC_PROP_CPB_LENGTH:
+    case FEI_H264_ENC_PROP_CPB_LENGTH:
       feienc->cpb_length = g_value_get_uint (value);
       break;
-    case GST_VAAPI_FEI_H264_ENC_PROP_NUM_VIEWS:
+    case FEI_H264_ENC_PROP_NUM_VIEWS:
       feienc->num_views = g_value_get_uint (value);
       break;
-    case GST_VAAPI_FEI_H264_ENC_PROP_VIEW_IDS:{
-      guint i;
-      GValueArray *view_ids = g_value_get_boxed (value);
-
-      if (view_ids == NULL) {
-        for (i = 0; i < feienc->num_views; i++)
-          feienc->view_ids[i] = i;
-      } else {
-        g_assert (view_ids->n_values <= feienc->num_views);
-
-        for (i = 0; i < feienc->num_views; i++) {
-          GValue *val = g_value_array_get_nth (view_ids, i);
-          feienc->view_ids[i] = g_value_get_uint (val);
-        }
-      }
+    case FEI_H264_ENC_PROP_VIEW_IDS:
+      set_view_ids (feienc, value);
       break;
-    }
-    case GST_VAAPI_FEI_H264_ENC_PROP_NUM_REF:
+    case FEI_H264_ENC_PROP_NUM_REF:
       feienc->num_ref_frames = g_value_get_uint (value);
       break;
-    case GST_VAAPI_FEI_H264_ENC_PROP_NUM_MV_PREDICT_L0:
+    case FEI_H264_ENC_PROP_NUM_MV_PREDICT_L0:
       feienc->num_mv_predictors_l0 = g_value_get_uint (value);
       break;
-    case GST_VAAPI_FEI_H264_ENC_PROP_NUM_MV_PREDICT_L1:
+    case FEI_H264_ENC_PROP_NUM_MV_PREDICT_L1:
       feienc->num_mv_predictors_l1 = g_value_get_uint (value);
       break;
-    case GST_VAAPI_FEI_H264_ENC_PROP_SEARCH_WINDOW:
+    case FEI_H264_ENC_PROP_SEARCH_WINDOW:
       feienc->search_window = g_value_get_enum (value);
       break;
-    case GST_VAAPI_FEI_H264_ENC_PROP_LEN_SP:
+    case FEI_H264_ENC_PROP_LEN_SP:
       feienc->len_sp = g_value_get_uint (value);
       break;
-    case GST_VAAPI_FEI_H264_ENC_PROP_SEARCH_PATH:
+    case FEI_H264_ENC_PROP_SEARCH_PATH:
       feienc->search_path = g_value_get_enum (value);
       break;
-    case GST_VAAPI_FEI_H264_ENC_PROP_REF_WIDTH:
+    case FEI_H264_ENC_PROP_REF_WIDTH:
       feienc->ref_width = g_value_get_uint (value);
       break;
-    case GST_VAAPI_FEI_H264_ENC_PROP_REF_HEIGHT:
+    case FEI_H264_ENC_PROP_REF_HEIGHT:
       feienc->ref_height = g_value_get_uint (value);
       break;
-    case GST_VAAPI_FEI_H264_ENC_PROP_SUBMB_MASK:
+    case FEI_H264_ENC_PROP_SUBMB_MASK:
       feienc->submb_part_mask = g_value_get_flags (value);
       break;
-    case GST_VAAPI_FEI_H264_ENC_PROP_SUBPEL_MODE:
+    case FEI_H264_ENC_PROP_SUBPEL_MODE:
       feienc->subpel_mode = g_value_get_enum (value);
       break;
-    case GST_VAAPI_FEI_H264_ENC_PROP_INTRA_PART_MASK:
+    case FEI_H264_ENC_PROP_INTRA_PART_MASK:
       feienc->intra_part_mask = g_value_get_flags (value);
       break;
-    case GST_VAAPI_FEI_H264_ENC_PROP_INTRA_SAD:
+    case FEI_H264_ENC_PROP_INTRA_SAD:
       feienc->intra_sad = g_value_get_enum (value);
       break;
-    case GST_VAAPI_FEI_H264_ENC_PROP_INTER_SAD:
+    case FEI_H264_ENC_PROP_INTER_SAD:
       feienc->inter_sad = g_value_get_enum (value);
       break;
-    case GST_VAAPI_FEI_H264_ENC_PROP_ADAPT_SEARCH:
+    case FEI_H264_ENC_PROP_ADAPT_SEARCH:
       feienc->adaptive_search = g_value_get_boolean (value) ? 1 : 0;
       break;
-    case GST_VAAPI_FEI_H264_ENC_PROP_MULTI_PRED_L0:
+    case FEI_H264_ENC_PROP_MULTI_PRED_L0:
       feienc->multi_predL0 = g_value_get_boolean (value) ? 1 : 0;
       break;
-    case GST_VAAPI_FEI_H264_ENC_PROP_MULTI_PRED_L1:
+    case FEI_H264_ENC_PROP_MULTI_PRED_L1:
       feienc->multi_predL1 = g_value_get_boolean (value) ? 1 : 0;
       break;
     default:
-      return GST_VAAPI_ENCODER_STATUS_ERROR_INVALID_PARAMETER;
+      G_OBJECT_WARN_INVALID_PROPERTY_ID (object, prop_id, pspec);
   }
-  return GST_VAAPI_ENCODER_STATUS_SUCCESS;
+}
+
+static void
+gst_vaapi_feienc_h264_get_property (GObject * object, guint prop_id,
+    GValue * value, GParamSpec * pspec)
+{
+  GstVaapiFeiEncH264 *const feienc = GST_VAAPI_FEI_ENC_H264_CAST (object);
+  GstVaapiEncoder *const base_encoder = GST_VAAPI_ENCODER (object);
+
+  switch (prop_id) {
+    case FEI_H264_ENC_PROP_RATECONTROL:
+      g_value_set_enum (value, base_encoder->rate_control);
+      break;
+    case FEI_H264_ENC_PROP_TUNE:
+      g_value_set_enum (value, base_encoder->tune);
+      break;
+    case FEI_H264_ENC_PROP_MAX_BFRAMES:
+      g_value_set_uint (value, feienc->num_bframes);
+      break;
+    case FEI_H264_ENC_PROP_INIT_QP:
+      g_value_set_uint (value, feienc->init_qp);
+      break;
+    case FEI_H264_ENC_PROP_MIN_QP:
+      g_value_set_uint (value, feienc->min_qp);
+      break;
+    case FEI_H264_ENC_PROP_NUM_SLICES:
+      g_value_set_uint (value, feienc->num_slices);
+      break;
+    case FEI_H264_ENC_PROP_CABAC:
+      g_value_set_boolean (value, feienc->use_cabac);
+      break;
+    case FEI_H264_ENC_PROP_DCT8X8:
+      g_value_set_boolean (value, feienc->use_dct8x8);
+      break;
+    case FEI_H264_ENC_PROP_CPB_LENGTH:
+      g_value_set_uint (value, feienc->cpb_length);
+      break;
+    case FEI_H264_ENC_PROP_NUM_VIEWS:
+      g_value_set_uint (value, feienc->num_views);
+      break;
+    case FEI_H264_ENC_PROP_VIEW_IDS:
+      get_view_ids (feienc, value);
+      break;
+    case FEI_H264_ENC_PROP_NUM_REF:
+      g_value_set_uint (value, feienc->num_ref_frames);
+      break;
+    case FEI_H264_ENC_PROP_NUM_MV_PREDICT_L0:
+      g_value_set_uint (value, feienc->num_mv_predictors_l0);
+      break;
+    case FEI_H264_ENC_PROP_NUM_MV_PREDICT_L1:
+      g_value_set_uint (value, feienc->num_mv_predictors_l1);
+      break;
+    case FEI_H264_ENC_PROP_SEARCH_WINDOW:
+      g_value_set_enum (value, feienc->search_window);
+      break;
+    case FEI_H264_ENC_PROP_LEN_SP:
+      g_value_set_uint (value, feienc->len_sp);
+      break;
+    case FEI_H264_ENC_PROP_SEARCH_PATH:
+      g_value_set_enum (value, feienc->search_path);
+      break;
+    case FEI_H264_ENC_PROP_REF_WIDTH:
+      g_value_set_uint (value, feienc->ref_width);
+      break;
+    case FEI_H264_ENC_PROP_REF_HEIGHT:
+      g_value_set_uint (value, feienc->ref_height);
+      break;
+    case FEI_H264_ENC_PROP_SUBMB_MASK:
+      g_value_set_flags (value, feienc->submb_part_mask);
+      break;
+    case FEI_H264_ENC_PROP_SUBPEL_MODE:
+      g_value_set_enum (value, feienc->subpel_mode);
+      break;
+    case FEI_H264_ENC_PROP_INTRA_PART_MASK:
+      g_value_set_flags (value, feienc->intra_part_mask);
+      break;
+    case FEI_H264_ENC_PROP_INTRA_SAD:
+      g_value_set_enum (value, feienc->intra_sad);
+      break;
+    case FEI_H264_ENC_PROP_INTER_SAD:
+      g_value_set_enum (value, feienc->inter_sad);
+      break;
+    case FEI_H264_ENC_PROP_ADAPT_SEARCH:
+      g_value_set_boolean (value, feienc->adaptive_search);
+      break;
+    case FEI_H264_ENC_PROP_MULTI_PRED_L0:
+      g_value_set_boolean (value, feienc->multi_predL0);
+      break;
+    case FEI_H264_ENC_PROP_MULTI_PRED_L1:
+      g_value_set_boolean (value, feienc->multi_predL1);
+      break;
+    default:
+      G_OBJECT_WARN_INVALID_PROPERTY_ID (object, prop_id, pspec);
+  }
 }
 
 static const GstVaapiEncoderClassData fei_enc_class_data = {
@@ -1814,27 +2023,340 @@ static const GstVaapiEncoderClassData fei_enc_class_data = {
   .encoder_tune_mask = SUPPORTED_TUNE_OPTIONS,
 };
 
-static inline const GstVaapiEncoderClass *
-gst_vaapi_feienc_h264_class (void)
+static void
+gst_vaapi_feienc_h264_class_init (GstVaapiFeiEncH264Class * klass)
 {
-  static const GstVaapiEncoderClass GstVaapiFeiEncH264Class = {
-    .parent_class = {
-          .size = sizeof (GstVaapiFeiEncH264),
-          .finalize = (GDestroyNotify) gst_vaapi_encoder_finalize,
-        }
-    ,
-    .class_data = &fei_enc_class_data,
-    .init = gst_vaapi_feienc_h264_init,
-    .finalize = gst_vaapi_feienc_h264_finalize,
-    .reconfigure = gst_vaapi_feienc_h264_reconfigure,
-    .get_default_properties = gst_vaapi_feienc_h264_get_default_properties,
-    .reordering = gst_vaapi_feienc_h264_reordering,
-    .encode = gst_vaapi_feienc_h264_fake_encode,
-    .flush = gst_vaapi_feienc_h264_flush,
-    .set_property = gst_vaapi_feienc_h264_set_property,
-    .get_codec_data = gst_vaapi_feienc_h264_get_codec_data,
-  };
-  return &GstVaapiFeiEncH264Class;
+  GObjectClass *const object_class = G_OBJECT_CLASS (klass);
+  GstVaapiEncoderClass *const encoder_class = GST_VAAPI_ENCODER_CLASS (klass);
+
+  encoder_class->class_data = &fei_enc_class_data;
+  encoder_class->reconfigure = gst_vaapi_feienc_h264_reconfigure;
+  encoder_class->reordering = gst_vaapi_feienc_h264_reordering;
+  encoder_class->encode = gst_vaapi_feienc_h264_fake_encode;
+  encoder_class->flush = gst_vaapi_feienc_h264_flush;
+  encoder_class->get_codec_data = gst_vaapi_feienc_h264_get_codec_data;
+
+  object_class->set_property = gst_vaapi_feienc_h264_set_property;
+  object_class->get_property = gst_vaapi_feienc_h264_get_property;
+  object_class->finalize = gst_vaapi_feienc_h264_finalize;
+
+  /**
+   * GstVaapiFeiEncH264:rate-control:
+   *
+   * The desired rate control mode, expressed as a #GstVaapiRateControl.
+   */
+  properties[FEI_H264_ENC_PROP_RATECONTROL] =
+      g_param_spec_enum ("rate-control",
+      "Rate Control", "Rate control mode",
+      fei_enc_class_data.rate_control_get_type (),
+      fei_enc_class_data.default_rate_control,
+      G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS | G_PARAM_CONSTRUCT |
+      GST_VAAPI_PARAM_ENCODER_EXPOSURE);
+
+  /**
+   * GstVaapiFeiEncH264:tune:
+   *
+   * The desired encoder tuning option.
+   */
+  properties[FEI_H264_ENC_PROP_TUNE] =
+      g_param_spec_enum ("tune",
+      "Encoder Tuning",
+      "Encoder tuning option",
+      fei_enc_class_data.encoder_tune_get_type (),
+      fei_enc_class_data.default_encoder_tune,
+      G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS | G_PARAM_CONSTRUCT |
+      GST_VAAPI_PARAM_ENCODER_EXPOSURE);
+
+  /**
+   * GstVaapiFeiEncH264:max-bframes:
+   *
+   * The number of B-frames between I and P.
+   */
+  properties[FEI_H264_ENC_PROP_MAX_BFRAMES] =
+      g_param_spec_uint ("max-bframes",
+      "Max B-Frames", "Number of B-frames between I and P", 0, 10, 0,
+      G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS | G_PARAM_CONSTRUCT |
+      GST_VAAPI_PARAM_ENCODER_EXPOSURE);
+
+  /**
+   * GstVaapiFeiEncH264:init-qp:
+   *
+   * The initial quantizer value.
+   */
+  properties[FEI_H264_ENC_PROP_INIT_QP] =
+      g_param_spec_uint ("init-qp",
+      "Initial QP", "Initial quantizer value", 1, 51, 26,
+      G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS | G_PARAM_CONSTRUCT |
+      GST_VAAPI_PARAM_ENCODER_EXPOSURE);
+
+  /**
+   * GstVaapiFeiEncH264:min-qp:
+   *
+   * The minimum quantizer value.
+   */
+  properties[FEI_H264_ENC_PROP_MIN_QP] =
+      g_param_spec_uint ("min-qp",
+      "Minimum QP", "Minimum quantizer value", 1, 51, 1,
+      G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS | G_PARAM_CONSTRUCT |
+      GST_VAAPI_PARAM_ENCODER_EXPOSURE);
+
+  /**
+   * GstVaapiFeiEncH264:num-slices:
+   *
+   * The number of slices per frame.
+   */
+  properties[FEI_H264_ENC_PROP_NUM_SLICES] =
+      g_param_spec_uint ("num-slices",
+      "Number of Slices",
+      "Number of slices per frame",
+      1, 200, 1,
+      G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS | G_PARAM_CONSTRUCT |
+      GST_VAAPI_PARAM_ENCODER_EXPOSURE);
+
+  /**
+   * GstVaapiFeiEncH264:cabac:
+   *
+   * Enable CABAC entropy coding mode for improved compression ratio,
+   * at the expense that the minimum target profile is Main. Default
+   * is CAVLC entropy coding mode.
+   */
+  properties[FEI_H264_ENC_PROP_CABAC] =
+      g_param_spec_boolean ("cabac",
+      "Enable CABAC",
+      "Enable CABAC entropy coding mode",
+      FALSE, G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS | G_PARAM_CONSTRUCT |
+      GST_VAAPI_PARAM_ENCODER_EXPOSURE);
+
+  /**
+   * GstVaapiFeiEncH264:dct8x8:
+   *
+   * Enable adaptive use of 8x8 transforms in I-frames. This improves
+   * the compression ratio by the minimum target profile is High.
+   * Default is to use 4x4 DCT only.
+   */
+  properties[FEI_H264_ENC_PROP_DCT8X8] =
+      g_param_spec_boolean ("dct8x8",
+      "Enable 8x8 DCT",
+      "Enable adaptive use of 8x8 transforms in I-frames",
+      FALSE, G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS | G_PARAM_CONSTRUCT |
+      GST_VAAPI_PARAM_ENCODER_EXPOSURE);
+
+  /**
+   * GstVaapiFeiEncH264:cpb-length:
+   *
+   * The size of the CPB buffer in milliseconds.
+   */
+  properties[FEI_H264_ENC_PROP_CPB_LENGTH] =
+      g_param_spec_uint ("cpb-length",
+      "CPB Length", "Length of the CPB buffer in milliseconds",
+      1, 10000, DEFAULT_CPB_LENGTH,
+      G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS | G_PARAM_CONSTRUCT |
+      GST_VAAPI_PARAM_ENCODER_EXPOSURE);
+
+  /**
+   * GstVaapiFeiEncH264:num-views:
+   *
+   * The number of views for MVC encoding .
+   */
+  properties[FEI_H264_ENC_PROP_NUM_VIEWS] =
+      g_param_spec_uint ("num-views",
+      "Number of Views",
+      "Number of Views for MVC encoding",
+      1, MAX_NUM_VIEWS, 1,
+      G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS | G_PARAM_CONSTRUCT |
+      GST_VAAPI_PARAM_ENCODER_EXPOSURE);
+  /**
+   * GstVaapiFeiEncH264:view-ids:
+   *
+   * The view ids for MVC encoding .
+   */
+  properties[FEI_H264_ENC_PROP_VIEW_IDS] =
+      gst_param_spec_array ("view-ids",
+      "View IDs", "Set of View Ids used for MVC encoding",
+      g_param_spec_uint ("view-id-value", "View id value",
+          "view id values used for mvc encoding", 0, MAX_VIEW_ID, 0,
+          G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS),
+      G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS | G_PARAM_CONSTRUCT |
+      GST_VAAPI_PARAM_ENCODER_EXPOSURE);
+  /**
+   * GstVaapiFeiEncH264:num-ref:
+   *
+   * The number of reference frames.
+   */
+  properties[FEI_H264_ENC_PROP_NUM_REF] =
+      g_param_spec_uint ("num-ref",
+      "Num Ref",
+      "reference frame number",
+      1, 6, 1, G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS | G_PARAM_CONSTRUCT |
+      GST_VAAPI_PARAM_ENCODER_EXPOSURE);
+
+  /**
+   * GstVaapiFeiEncH264:num_mv_predictors_l0:
+   *
+   * The number of mv predict
+   */
+  properties[FEI_H264_ENC_PROP_NUM_MV_PREDICT_L0] =
+      g_param_spec_uint ("num-mvpredict-l0",
+      "Num mv predict l0",
+      "Indicate how many predictors should be used for l0",
+      0, 3, 0, G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS | G_PARAM_CONSTRUCT |
+      GST_VAAPI_PARAM_ENCODER_EXPOSURE);
+  /**
+   * GstVaapiFeiEncH264:num_mv_predictors_l1:
+   *
+   * The number of mv predict
+   */
+  properties[FEI_H264_ENC_PROP_NUM_MV_PREDICT_L1] =
+      g_param_spec_uint ("num-mvpredict-l1",
+      "Num mv predict l1",
+      "Indicate how many predictors should be used for l1",
+      0, 3, 0, G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS | G_PARAM_CONSTRUCT |
+      GST_VAAPI_PARAM_ENCODER_EXPOSURE);
+  /**
+   * GstVaapiFeiEncH264:search-window:
+   */
+  properties[FEI_H264_ENC_PROP_SEARCH_WINDOW] =
+      g_param_spec_enum ("search-window",
+      "search window",
+      "Specify one of the predefined search path",
+      GST_VAAPI_TYPE_FEI_H264_SEARCH_WINDOW,
+      GST_VAAPI_FEI_H264_SEARCH_WINDOW_DEFAULT,
+      G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS | G_PARAM_CONSTRUCT |
+      GST_VAAPI_PARAM_ENCODER_EXPOSURE);
+  /**
+   * GstVaapiFeiEncH264:len-sp:
+   */
+  properties[FEI_H264_ENC_PROP_LEN_SP] =
+      g_param_spec_uint ("len-sp",
+      "len sp",
+      "This value defines number of search units in search path",
+      1, 63, 32,
+      G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS | G_PARAM_CONSTRUCT |
+      GST_VAAPI_PARAM_ENCODER_EXPOSURE);
+
+  /**
+   * GstVaapiFeiEncH264:search-path:
+   */
+  properties[FEI_H264_ENC_PROP_SEARCH_PATH] =
+      g_param_spec_enum ("search-path",
+      "search path",
+      "Specify search path",
+      GST_VAAPI_TYPE_FEI_H264_SEARCH_PATH,
+      GST_VAAPI_FEI_H264_SEARCH_PATH_DEFAULT,
+      G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS | G_PARAM_CONSTRUCT |
+      GST_VAAPI_PARAM_ENCODER_EXPOSURE);
+
+  /**
+   * GstVaapiFeiEncH264:ref-width:
+   */
+  properties[FEI_H264_ENC_PROP_REF_WIDTH] =
+      g_param_spec_uint ("ref-width",
+      "ref width",
+      "Width of search region in pixel, must be multiple of 4",
+      4, 64, 32,
+      G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS | G_PARAM_CONSTRUCT |
+      GST_VAAPI_PARAM_ENCODER_EXPOSURE);
+
+  /**
+   * GstVaapiFeiEncH264:ref-height:
+   */
+  properties[FEI_H264_ENC_PROP_REF_HEIGHT] =
+      g_param_spec_uint ("ref-height",
+      "ref height",
+      "Height of search region in pixel, must be multiple of 4",
+      4, 32, 32,
+      G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS | G_PARAM_CONSTRUCT |
+      GST_VAAPI_PARAM_ENCODER_EXPOSURE);
+  /**
+   * GstVaapiFeiEncH264:submb-mask:
+   * Defines the bit-mask for disabling sub-partition
+   *
+   */
+  properties[FEI_H264_ENC_PROP_SUBMB_MASK] =
+      g_param_spec_flags ("submbpart-mask",
+      "submb part mask",
+      "defines the bit-mask for disabling sub mb partition",
+      GST_VAAPI_TYPE_FEI_H264_SUB_MB_PART_MASK,
+      GST_VAAPI_FEI_H264_SUB_MB_PART_MASK_DEFAULT,
+      G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS | G_PARAM_CONSTRUCT |
+      GST_VAAPI_PARAM_ENCODER_EXPOSURE);
+
+  /**
+   * GstVaapiFeiEncH264:subpel-mode:
+   */
+  properties[FEI_H264_ENC_PROP_SUBPEL_MODE] =
+      g_param_spec_enum ("subpel-mode",
+      "subpel mode",
+      "Sub pixel precision for motion estimation",
+      GST_VAAPI_TYPE_FEI_H264_SUB_PEL_MODE,
+      GST_VAAPI_FEI_H264_SUB_PEL_MODE_DEFAULT,
+      G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS | G_PARAM_CONSTRUCT |
+      GST_VAAPI_PARAM_ENCODER_EXPOSURE);
+  /**
+   * GstVaapiFeiEncH264:intrapart-mask:
+   */
+  properties[FEI_H264_ENC_PROP_INTRA_PART_MASK] =
+      g_param_spec_flags ("intrapart-mask",
+      "intra part mask",
+      "What block and sub-block partitions are disabled for intra MBs",
+      GST_VAAPI_TYPE_FEI_H264_INTRA_PART_MASK,
+      GST_VAAPI_FEI_H264_INTRA_PART_MASK_DEFAULT,
+      G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS | G_PARAM_CONSTRUCT |
+      GST_VAAPI_PARAM_ENCODER_EXPOSURE);
+  /**
+   * GstVaapiFeiEncH264:intra-sad:
+   */
+  properties[FEI_H264_ENC_PROP_INTRA_SAD] =
+      g_param_spec_enum ("intra-sad",
+      "intra sad",
+      "Specifies distortion measure adjustments used in the motion search SAD comparison for intra MB",
+      GST_VAAPI_TYPE_FEI_H264_SAD_MODE, GST_VAAPI_FEI_H264_SAD_MODE_DEFAULT,
+      G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS | G_PARAM_CONSTRUCT |
+      GST_VAAPI_PARAM_ENCODER_EXPOSURE);
+
+  /**
+   * GstVaapiFeiEncH264:inter-sad:
+   */
+  properties[FEI_H264_ENC_PROP_INTER_SAD] =
+      g_param_spec_enum ("inter-sad",
+      "inter sad",
+      "Specifies distortion measure adjustments used in the motion search SAD comparison for inter MB",
+      GST_VAAPI_TYPE_FEI_H264_SAD_MODE, GST_VAAPI_FEI_H264_SAD_MODE_DEFAULT,
+      G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS | G_PARAM_CONSTRUCT |
+      GST_VAAPI_PARAM_ENCODER_EXPOSURE);
+
+  /**
+   * GstVaapiFeiEncH264:adaptive-search:
+   */
+  properties[FEI_H264_ENC_PROP_ADAPT_SEARCH] =
+      g_param_spec_boolean ("adaptive-search",
+      "adaptive-search",
+      "Enable adaptive search",
+      FALSE, G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS | G_PARAM_CONSTRUCT |
+      GST_VAAPI_PARAM_ENCODER_EXPOSURE);
+
+  /**
+   * GstVaapiFeiEncH264:multi-predL0:
+   */
+  properties[FEI_H264_ENC_PROP_MULTI_PRED_L0] =
+      g_param_spec_boolean ("multi-predL0",
+      "multi predL0",
+      "Enable multi prediction for ref L0 list",
+      FALSE, G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS | G_PARAM_CONSTRUCT |
+      GST_VAAPI_PARAM_ENCODER_EXPOSURE);
+
+  /**
+   * GstVaapiFeiEncH264:multi-predL0:
+   */
+  properties[FEI_H264_ENC_PROP_MULTI_PRED_L1] =
+      g_param_spec_boolean ("multi-predL1",
+      "multi predL1",
+      "Enable multi prediction for ref L1 list",
+      FALSE, G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS | G_PARAM_CONSTRUCT |
+      GST_VAAPI_PARAM_ENCODER_EXPOSURE);
+
+  g_object_class_install_properties (object_class, FEI_H264_ENC_N_PROPERTIES,
+      properties);
 }
 
 /**
@@ -1849,335 +2371,7 @@ gst_vaapi_feienc_h264_class (void)
 GstVaapiEncoder *
 gst_vaapi_feienc_h264_new (GstVaapiDisplay * display)
 {
-  return gst_vaapi_encoder_new (gst_vaapi_feienc_h264_class (), display);
-}
-
-/**
- * gst_vaapi_feienc_h264_get_fei_properties:
- *
- * Determines the set of common and H.264 Fei specific feienc properties.
- * The caller owns an extra reference to the resulting array of
- * #GstVaapiEncoderPropInfo elements, so it shall be released with
- * g_ptr_array_unref() after usage.
- *
- * Return value: the set of feienc properties for #GstVaapiFeiEncH264,
- *   or %NULL if an error occurred.
- */
-static GPtrArray *
-gst_vaapi_feienc_h264_get_fei_properties (GPtrArray * props)
-{
-  /**
-    * GstVaapiFeiEncH264:num_mv_predictors_l0:
-    *
-    * The number of mv predict
-    */
-  GST_VAAPI_ENCODER_PROPERTIES_APPEND (props,
-      GST_VAAPI_FEI_H264_ENC_PROP_NUM_MV_PREDICT_L0,
-      g_param_spec_uint ("num-mvpredict-l0",
-          "Num mv predict l0",
-          "Indicate how many predictors should be used for l0",
-          0, 3, 0, G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS));
-  /**
-    * GstVaapiFeiEncH264:num_mv_predictors_l1:
-    *
-    * The number of mv predict
-    */
-  GST_VAAPI_ENCODER_PROPERTIES_APPEND (props,
-      GST_VAAPI_FEI_H264_ENC_PROP_NUM_MV_PREDICT_L1,
-      g_param_spec_uint ("num-mvpredict-l1",
-          "Num mv predict l1",
-          "Indicate how many predictors should be used for l1",
-          0, 3, 0, G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS));
-  /**
-    * GstVaapiFeiEncH264:search-window:
-    */
-  GST_VAAPI_ENCODER_PROPERTIES_APPEND (props,
-      GST_VAAPI_FEI_H264_ENC_PROP_SEARCH_WINDOW,
-      g_param_spec_enum ("search-window",
-          "search window",
-          "Specify one of the predefined search path",
-          GST_VAAPI_TYPE_FEI_H264_SEARCH_WINDOW,
-          GST_VAAPI_FEI_H264_SEARCH_WINDOW_DEFAULT,
-          G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS));
-  /**
-    * GstVaapiFeiEncH264:len-sp:
-    */
-  GST_VAAPI_ENCODER_PROPERTIES_APPEND (props,
-      GST_VAAPI_FEI_H264_ENC_PROP_LEN_SP,
-      g_param_spec_uint ("len-sp",
-          "len sp",
-          "This value defines number of search units in search path",
-          1, 63, 32, G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS));
-
-  /**
-    * GstVaapiFeiEncH264:search-path:
-    */
-  GST_VAAPI_ENCODER_PROPERTIES_APPEND (props,
-      GST_VAAPI_FEI_H264_ENC_PROP_SEARCH_PATH,
-      g_param_spec_enum ("search-path",
-          "search path",
-          "Specify search path",
-          GST_VAAPI_TYPE_FEI_H264_SEARCH_PATH,
-          GST_VAAPI_FEI_H264_SEARCH_PATH_DEFAULT,
-          G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS));
-
-  /**
-    * GstVaapiFeiEncH264:ref-width:
-    */
-  GST_VAAPI_ENCODER_PROPERTIES_APPEND (props,
-      GST_VAAPI_FEI_H264_ENC_PROP_REF_WIDTH,
-      g_param_spec_uint ("ref-width",
-          "ref width",
-          "Width of search region in pixel, must be multiple of 4",
-          4, 64, 32, G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS));
-
-  /**
-    * GstVaapiFeiEncH264:ref-height:
-    */
-  GST_VAAPI_ENCODER_PROPERTIES_APPEND (props,
-      GST_VAAPI_FEI_H264_ENC_PROP_REF_HEIGHT,
-      g_param_spec_uint ("ref-height",
-          "ref height",
-          "Height of search region in pixel, must be multiple of 4",
-          4, 32, 32, G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS));
-  /**
-    * GstVaapiFeiEncH264:submb-mask:
-    * Defines the bit-mask for disabling sub-partition
-    *
-    */
-  GST_VAAPI_ENCODER_PROPERTIES_APPEND (props,
-      GST_VAAPI_FEI_H264_ENC_PROP_SUBMB_MASK,
-      g_param_spec_flags ("submbpart-mask",
-          "submb part mask",
-          "defines the bit-mask for disabling sub mb partition",
-          GST_VAAPI_TYPE_FEI_H264_SUB_MB_PART_MASK,
-          GST_VAAPI_FEI_H264_SUB_MB_PART_MASK_DEFAULT,
-          G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS));
-
-  /**
-    * GstVaapiFeiEncH264:subpel-mode:
-    */
-  GST_VAAPI_ENCODER_PROPERTIES_APPEND (props,
-      GST_VAAPI_FEI_H264_ENC_PROP_SUBPEL_MODE,
-      g_param_spec_enum ("subpel-mode",
-          "subpel mode",
-          "Sub pixel precision for motion estimation",
-          GST_VAAPI_TYPE_FEI_H264_SUB_PEL_MODE,
-          GST_VAAPI_FEI_H264_SUB_PEL_MODE_DEFAULT,
-          G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS));
-  /**
-    * GstVaapiFeiEncH264:intrapart-mask:
-    */
-  GST_VAAPI_ENCODER_PROPERTIES_APPEND (props,
-      GST_VAAPI_FEI_H264_ENC_PROP_INTRA_PART_MASK,
-      g_param_spec_flags ("intrapart-mask",
-          "intra part mask",
-          "What block and sub-block partitions are disabled for intra MBs",
-          GST_VAAPI_TYPE_FEI_H264_INTRA_PART_MASK,
-          GST_VAAPI_FEI_H264_INTRA_PART_MASK_DEFAULT,
-          G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS));
-  /**
-    * GstVaapiFeiEncH264:intra-sad:
-    */
-  GST_VAAPI_ENCODER_PROPERTIES_APPEND (props,
-      GST_VAAPI_FEI_H264_ENC_PROP_INTRA_SAD,
-      g_param_spec_enum ("intra-sad",
-          "intra sad",
-          "Specifies distortion measure adjustments used in the motion search SAD comparison for intra MB",
-          GST_VAAPI_TYPE_FEI_H264_SAD_MODE, GST_VAAPI_FEI_H264_SAD_MODE_DEFAULT,
-          G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS));
-
-  /**
-    * GstVaapiFeiEncH264:inter-sad:
-    */
-  GST_VAAPI_ENCODER_PROPERTIES_APPEND (props,
-      GST_VAAPI_FEI_H264_ENC_PROP_INTER_SAD,
-      g_param_spec_enum ("inter-sad",
-          "inter sad",
-          "Specifies distortion measure adjustments used in the motion search SAD comparison for inter MB",
-          GST_VAAPI_TYPE_FEI_H264_SAD_MODE, GST_VAAPI_FEI_H264_SAD_MODE_DEFAULT,
-          G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS));
-
-  /**
-    * GstVaapiFeiEncH264:adaptive-search:
-    */
-  GST_VAAPI_ENCODER_PROPERTIES_APPEND (props,
-      GST_VAAPI_FEI_H264_ENC_PROP_ADAPT_SEARCH,
-      g_param_spec_boolean ("adaptive-search",
-          "adaptive-search",
-          "Enable adaptive search",
-          FALSE, G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS));
-
-  /**
-    * GstVaapiFeiEncH264:multi-predL0:
-    */
-  GST_VAAPI_ENCODER_PROPERTIES_APPEND (props,
-      GST_VAAPI_FEI_H264_ENC_PROP_MULTI_PRED_L0,
-      g_param_spec_boolean ("multi-predL0",
-          "multi predL0",
-          "Enable multi prediction for ref L0 list",
-          FALSE, G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS));
-
-  /**
-    * GstVaapiFeiEncH264:multi-predL0:
-    */
-  GST_VAAPI_ENCODER_PROPERTIES_APPEND (props,
-      GST_VAAPI_FEI_H264_ENC_PROP_MULTI_PRED_L1,
-      g_param_spec_boolean ("multi-predL1",
-          "multi predL1",
-          "Enable multi prediction for ref L1 list",
-          FALSE, G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS));
-
-  return props;
-
-}
-
-/**
- * gst_vaapi_feienc_h264_get_default_properties:
- *
- * Determines the set of common and H.264 specific feienc properties.
- * The caller owns an extra reference to the resulting array of
- * #GstVaapiEncoderPropInfo elements, so it shall be released with
- * g_ptr_array_unref() after usage.
- *
- * Return value: the set of feienc properties for #GstVaapiFeiEncH264,
- *   or %NULL if an error occurred.
- */
-GPtrArray *
-gst_vaapi_feienc_h264_get_default_properties (void)
-{
-  const GstVaapiEncoderClass *const klass = gst_vaapi_feienc_h264_class ();
-  GPtrArray *props;
-
-  props = gst_vaapi_encoder_properties_get_default (klass);
-
-  if (!props)
-    return NULL;
-
-  /**
-   * GstVaapiFeiEncH264:max-bframes:
-   *
-   * The number of B-frames between I and P.
-   */
-  GST_VAAPI_ENCODER_PROPERTIES_APPEND (props,
-      GST_VAAPI_FEI_H264_ENC_PROP_MAX_BFRAMES,
-      g_param_spec_uint ("max-bframes",
-          "Max B-Frames", "Number of B-frames between I and P", 0, 10, 0,
-          G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS));
-
-  /**
-   * GstVaapiFeiEncH264:init-qp:
-   *
-   * The initial quantizer value.
-   */
-  GST_VAAPI_ENCODER_PROPERTIES_APPEND (props,
-      GST_VAAPI_FEI_H264_ENC_PROP_INIT_QP,
-      g_param_spec_uint ("init-qp",
-          "Initial QP", "Initial quantizer value", 1, 51, 26,
-          G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS));
-
-  /**
-   * GstVaapiFeiEncH264:min-qp:
-   *
-   * The minimum quantizer value.
-   */
-  GST_VAAPI_ENCODER_PROPERTIES_APPEND (props,
-      GST_VAAPI_FEI_H264_ENC_PROP_MIN_QP,
-      g_param_spec_uint ("min-qp",
-          "Minimum QP", "Minimum quantizer value", 1, 51, 1,
-          G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS));
-
-  /**
-   * GstVaapiFeiEncH264:num-slices:
-   *
-   * The number of slices per frame.
-   */
-  GST_VAAPI_ENCODER_PROPERTIES_APPEND (props,
-      GST_VAAPI_FEI_H264_ENC_PROP_NUM_SLICES,
-      g_param_spec_uint ("num-slices",
-          "Number of Slices",
-          "Number of slices per frame",
-          1, 200, 1, G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS));
-
-  /**
-   * GstVaapiFeiEncH264:cabac:
-   *
-   * Enable CABAC entropy coding mode for improved compression ratio,
-   * at the expense that the minimum target profile is Main. Default
-   * is CAVLC entropy coding mode.
-   */
-  GST_VAAPI_ENCODER_PROPERTIES_APPEND (props,
-      GST_VAAPI_FEI_H264_ENC_PROP_CABAC,
-      g_param_spec_boolean ("cabac",
-          "Enable CABAC",
-          "Enable CABAC entropy coding mode",
-          FALSE, G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS));
-
-  /**
-   * GstVaapiFeiEncH264:dct8x8:
-   *
-   * Enable adaptive use of 8x8 transforms in I-frames. This improves
-   * the compression ratio by the minimum target profile is High.
-   * Default is to use 4x4 DCT only.
-   */
-  GST_VAAPI_ENCODER_PROPERTIES_APPEND (props,
-      GST_VAAPI_FEI_H264_ENC_PROP_DCT8X8,
-      g_param_spec_boolean ("dct8x8",
-          "Enable 8x8 DCT",
-          "Enable adaptive use of 8x8 transforms in I-frames",
-          FALSE, G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS));
-
-  /**
-   * GstVaapiFeiEncH264:cpb-length:
-   *
-   * The size of the CPB buffer in milliseconds.
-   */
-  GST_VAAPI_ENCODER_PROPERTIES_APPEND (props,
-      GST_VAAPI_FEI_H264_ENC_PROP_CPB_LENGTH,
-      g_param_spec_uint ("cpb-length",
-          "CPB Length", "Length of the CPB buffer in milliseconds",
-          1, 10000, DEFAULT_CPB_LENGTH,
-          G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS));
-
-  /**
-   * GstVaapiFeiEncH264:num-views:
-   *
-   * The number of views for MVC encoding .
-   */
-  GST_VAAPI_ENCODER_PROPERTIES_APPEND (props,
-      GST_VAAPI_FEI_H264_ENC_PROP_NUM_VIEWS,
-      g_param_spec_uint ("num-views",
-          "Number of Views",
-          "Number of Views for MVC encoding",
-          1, MAX_NUM_VIEWS, 1, G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS));
-  /**
-   * GstVaapiFeiEncH264:view-ids:
-   *
-   * The view ids for MVC encoding .
-   */
-  GST_VAAPI_ENCODER_PROPERTIES_APPEND (props,
-      GST_VAAPI_FEI_H264_ENC_PROP_VIEW_IDS,
-      g_param_spec_value_array ("view-ids",
-          "View IDs", "Set of View Ids used for MVC encoding",
-          g_param_spec_uint ("view-id-value", "View id value",
-              "view id values used for mvc encoding", 0, MAX_VIEW_ID, 0,
-              G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS),
-          G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS));
-  /**
-   * GstVaapiFeiEncH264:num-ref:
-   *
-   * The number of reference frames.
-   */
-  GST_VAAPI_ENCODER_PROPERTIES_APPEND (props,
-      GST_VAAPI_FEI_H264_ENC_PROP_NUM_REF,
-      g_param_spec_uint ("num-ref",
-          "Num Ref",
-          "reference frame number",
-          1, 6, 1, G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS));
-
-  props = gst_vaapi_feienc_h264_get_fei_properties (props);
-
-  return props;
+  return g_object_new (GST_TYPE_VAAPI_FEI_ENC_H264, "display", display, NULL);
 }
 
 /**

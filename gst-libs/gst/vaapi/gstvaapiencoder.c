@@ -34,181 +34,6 @@
 #define DEBUG 1
 #include "gstvaapidebug.h"
 
-/* Helper function to create a new encoder property object */
-static GstVaapiEncoderPropData *
-prop_new (gint id, GParamSpec * pspec)
-{
-  GstVaapiEncoderPropData *prop;
-
-  if (!id || !pspec)
-    return NULL;
-
-  prop = g_slice_new (GstVaapiEncoderPropData);
-  if (!prop)
-    return NULL;
-
-  prop->prop = id;
-  prop->pspec = g_param_spec_ref_sink (pspec);
-  return prop;
-}
-
-/* Helper function to release a property object and any memory held herein */
-static void
-prop_free (GstVaapiEncoderPropData * prop)
-{
-  if (!prop)
-    return;
-
-  if (prop->pspec) {
-    g_param_spec_unref (prop->pspec);
-    prop->pspec = NULL;
-  }
-  g_slice_free (GstVaapiEncoderPropData, prop);
-}
-
-/* Helper function to lookup the supplied property specification */
-static GParamSpec *
-prop_find_pspec (GstVaapiEncoder * encoder, gint prop_id)
-{
-  GPtrArray *const props = encoder->properties;
-  guint i;
-
-  if (props) {
-    for (i = 0; i < props->len; i++) {
-      GstVaapiEncoderPropInfo *const prop = g_ptr_array_index (props, i);
-      if (prop->prop == prop_id)
-        return prop->pspec;
-    }
-  }
-  return NULL;
-}
-
-/* Create a new array of properties, or NULL on error */
-GPtrArray *
-gst_vaapi_encoder_properties_append (GPtrArray * props, gint prop_id,
-    GParamSpec * pspec)
-{
-  GstVaapiEncoderPropData *prop;
-
-  if (!props) {
-    props = g_ptr_array_new_with_free_func ((GDestroyNotify) prop_free);
-    if (!props)
-      return NULL;
-  }
-
-  prop = prop_new (prop_id, pspec);
-  if (!prop)
-    goto error_allocation_failed;
-  g_ptr_array_add (props, prop);
-  return props;
-
-  /* ERRORS */
-error_allocation_failed:
-  {
-    GST_ERROR ("failed to allocate encoder property info structure");
-    g_ptr_array_unref (props);
-    return NULL;
-  }
-}
-
-/* Generate the common set of encoder properties */
-GPtrArray *
-gst_vaapi_encoder_properties_get_default (const GstVaapiEncoderClass * klass)
-{
-  const GstVaapiEncoderClassData *const cdata = klass->class_data;
-  GPtrArray *props = NULL;
-
-  g_assert (cdata->rate_control_get_type != NULL);
-
-  /**
-   * GstVaapiEncoder:rate-control:
-   *
-   * The desired rate control mode, expressed as a #GstVaapiRateControl.
-   */
-  GST_VAAPI_ENCODER_PROPERTIES_APPEND (props,
-      GST_VAAPI_ENCODER_PROP_RATECONTROL,
-      g_param_spec_enum ("rate-control",
-          "Rate Control", "Rate control mode",
-          cdata->rate_control_get_type (), cdata->default_rate_control,
-          G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS));
-
-  /**
-   * GstVaapiEncoder:bitrate:
-   *
-   * The desired bitrate, expressed in kbps.
-   * This is available when rate-control is CBR or VBR.
-   *
-   * CBR: This applies equally to minimum, maximum and target bitrate in the driver.
-   * VBR: This applies to maximum bitrate in the driver.
-   *      Minimum bitrate will be calculated like the following in the driver.
-   *          if (target percentage < 50) minimum bitrate = 0
-   *          else minimum bitrate = maximum bitrate * (2 * target percentage -100) / 100
-   *      Target bitrate will be calculated like the following in the driver.
-   *          target bitrate = maximum bitrate * target percentage / 100
-   *
-   * Note that target percentage is set as 70 currently in GStreamer VA-API.
-   */
-  GST_VAAPI_ENCODER_PROPERTIES_APPEND (props,
-      GST_VAAPI_ENCODER_PROP_BITRATE,
-      g_param_spec_uint ("bitrate",
-          "Bitrate (kbps)",
-          "The desired bitrate expressed in kbps (0: auto-calculate)",
-          0, 100 * 1024, 0, G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS));
-
-  /**
-   * GstVaapiEncoder:keyframe-period:
-   *
-   * The maximal distance between two keyframes.
-   */
-  GST_VAAPI_ENCODER_PROPERTIES_APPEND (props,
-      GST_VAAPI_ENCODER_PROP_KEYFRAME_PERIOD,
-      g_param_spec_uint ("keyframe-period",
-          "Keyframe Period",
-          "Maximal distance between two keyframes (0: auto-calculate)", 0,
-          G_MAXUINT32, 30, G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS));
-
-  /**
-   * GstVaapiEncoder:tune:
-   *
-   * The desired encoder tuning option.
-   */
-  GST_VAAPI_ENCODER_PROPERTIES_APPEND (props,
-      GST_VAAPI_ENCODER_PROP_TUNE,
-      g_param_spec_enum ("tune",
-          "Encoder Tuning",
-          "Encoder tuning option",
-          cdata->encoder_tune_get_type (), cdata->default_encoder_tune,
-          G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS));
-
-  /**
-   * GstVaapiEncoder:quality-level:
-   *
-   * The Encoding quality level.
-   */
-  GST_VAAPI_ENCODER_PROPERTIES_APPEND (props,
-      GST_VAAPI_ENCODER_PROP_QUALITY_LEVEL,
-      g_param_spec_uint ("quality-level",
-          "Quality Level", "Encoding Quality Level "
-          "(lower value means higher-quality/slow-encode, "
-          " higher value means lower-quality/fast-encode)",
-          1, 7, 4, G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS));
-
-  /**
-   * GstVapiEncoder:roi-default-delta-qp
-   *
-   * Default delta-qp to apply to each Region of Interest
-   */
-  GST_VAAPI_ENCODER_PROPERTIES_APPEND (props,
-      GST_VAAPI_ENCODER_PROP_DEFAULT_ROI_VALUE,
-      g_param_spec_int ("default-roi-delta-qp", "Default ROI delta QP",
-          "The default delta-qp to apply to each Region of Interest"
-          "(lower value means higher-quality, "
-          "higher value means lower-quality)",
-          -10, 10, -10, G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS));
-
-  return props;
-}
-
 gboolean
 gst_vaapi_encoder_ensure_param_quality_level (GstVaapiEncoder * encoder,
     GstVaapiEncPicture * picture)
@@ -274,6 +99,35 @@ gst_vaapi_encoder_ensure_param_control_rate (GstVaapiEncoder * encoder,
 }
 
 gboolean
+gst_vaapi_encoder_ensure_param_trellis (GstVaapiEncoder * encoder,
+    GstVaapiEncPicture * picture)
+{
+#if VA_CHECK_VERSION(1,0,0)
+  GstVaapiEncMiscParam *misc;
+  VAEncMiscParameterQuantization *param;
+
+  if (!encoder->trellis)
+    return TRUE;
+
+  misc = GST_VAAPI_ENC_QUANTIZATION_MISC_PARAM_NEW (encoder);
+  if (!misc)
+    return FALSE;
+  if (!misc->data)
+    return FALSE;
+
+  param = (VAEncMiscParameterQuantization *) misc->data;
+  param->quantization_flags.bits.disable_trellis = 0;
+  param->quantization_flags.bits.enable_trellis_I = 1;
+  param->quantization_flags.bits.enable_trellis_B = 1;
+  param->quantization_flags.bits.enable_trellis_P = 1;
+
+  gst_vaapi_enc_picture_add_misc_param (picture, misc);
+  gst_vaapi_codec_object_replace (&misc, NULL);
+#endif
+  return TRUE;
+}
+
+gboolean
 gst_vaapi_encoder_ensure_param_roi_regions (GstVaapiEncoder * encoder,
     GstVaapiEncPicture * picture)
 {
@@ -329,6 +183,8 @@ gst_vaapi_encoder_ensure_param_roi_regions (GstVaapiEncoder * encoder,
     roi = (GstVideoRegionOfInterestMeta *)
         gst_buffer_iterate_meta_filtered (input, &state,
         GST_VIDEO_REGION_OF_INTEREST_META_API_TYPE);
+    if (!roi)
+      continue;
 
     /* ignore roi if overflow */
     if ((roi->x > G_MAXINT16) || (roi->y > G_MAXINT16)
@@ -367,33 +223,6 @@ gst_vaapi_encoder_ensure_param_roi_regions (GstVaapiEncoder * encoder,
 }
 
 /**
- * gst_vaapi_encoder_ref:
- * @encoder: a #GstVaapiEncoder
- *
- * Atomically increases the reference count of the given @encoder by one.
- *
- * Returns: The same @encoder argument
- */
-GstVaapiEncoder *
-gst_vaapi_encoder_ref (GstVaapiEncoder * encoder)
-{
-  return gst_vaapi_object_ref (encoder);
-}
-
-/**
- * gst_vaapi_encoder_unref:
- * @encoder: a #GstVaapiEncoder
- *
- * Atomically decreases the reference count of the @encoder by one. If
- * the reference count reaches zero, the encoder will be free'd.
- */
-void
-gst_vaapi_encoder_unref (GstVaapiEncoder * encoder)
-{
-  gst_vaapi_object_unref (encoder);
-}
-
-/**
  * gst_vaapi_encoder_replace:
  * @old_encoder_ptr: a pointer to a #GstVaapiEncoder
  * @new_encoder: a #GstVaapiEncoder
@@ -406,7 +235,8 @@ void
 gst_vaapi_encoder_replace (GstVaapiEncoder ** old_encoder_ptr,
     GstVaapiEncoder * new_encoder)
 {
-  gst_vaapi_object_replace (old_encoder_ptr, new_encoder);
+  gst_object_replace ((GstObject **) old_encoder_ptr,
+      (GstObject *) new_encoder);
 }
 
 /* Notifies gst_vaapi_encoder_create_coded_buffer() that a new buffer is free */
@@ -479,6 +309,46 @@ gst_vaapi_encoder_create_surface (GstVaapiEncoder * encoder)
   return proxy;
 }
 
+/* Create a coded buffer proxy where the picture is going to be
+ * decoded, the subclass encode vmethod is called and, if it doesn't
+ * fail, the coded buffer is pushed into the async queue */
+static GstVaapiEncoderStatus
+gst_vaapi_encoder_encode_and_queue (GstVaapiEncoder * encoder,
+    GstVaapiEncPicture * picture)
+{
+  GstVaapiEncoderClass *const klass = GST_VAAPI_ENCODER_GET_CLASS (encoder);
+  GstVaapiCodedBufferProxy *codedbuf_proxy;
+  GstVaapiEncoderStatus status;
+
+  codedbuf_proxy = gst_vaapi_encoder_create_coded_buffer (encoder);
+  if (!codedbuf_proxy)
+    goto error_create_coded_buffer;
+
+  status = klass->encode (encoder, picture, codedbuf_proxy);
+  if (status != GST_VAAPI_ENCODER_STATUS_SUCCESS)
+    goto error_encode;
+
+  gst_vaapi_coded_buffer_proxy_set_user_data (codedbuf_proxy,
+      picture, (GDestroyNotify) gst_vaapi_mini_object_unref);
+  g_async_queue_push (encoder->codedbuf_queue, codedbuf_proxy);
+  encoder->num_codedbuf_queued++;
+
+  return status;
+
+  /* ERRORS */
+error_create_coded_buffer:
+  {
+    GST_ERROR ("failed to allocate coded buffer");
+    return GST_VAAPI_ENCODER_STATUS_ERROR_ALLOCATION_FAILED;
+  }
+error_encode:
+  {
+    GST_ERROR ("failed to encode frame (status = %d)", status);
+    gst_vaapi_coded_buffer_proxy_unref (codedbuf_proxy);
+    return status;
+  }
+}
+
 /**
  * gst_vaapi_encoder_put_frame:
  * @encoder: a #GstVaapiEncoder
@@ -496,7 +366,6 @@ gst_vaapi_encoder_put_frame (GstVaapiEncoder * encoder,
   GstVaapiEncoderClass *const klass = GST_VAAPI_ENCODER_GET_CLASS (encoder);
   GstVaapiEncoderStatus status;
   GstVaapiEncPicture *picture;
-  GstVaapiCodedBufferProxy *codedbuf_proxy;
 
   for (;;) {
     picture = NULL;
@@ -506,18 +375,9 @@ gst_vaapi_encoder_put_frame (GstVaapiEncoder * encoder,
     if (status != GST_VAAPI_ENCODER_STATUS_SUCCESS)
       goto error_reorder_frame;
 
-    codedbuf_proxy = gst_vaapi_encoder_create_coded_buffer (encoder);
-    if (!codedbuf_proxy)
-      goto error_create_coded_buffer;
-
-    status = klass->encode (encoder, picture, codedbuf_proxy);
+    status = gst_vaapi_encoder_encode_and_queue (encoder, picture);
     if (status != GST_VAAPI_ENCODER_STATUS_SUCCESS)
       goto error_encode;
-
-    gst_vaapi_coded_buffer_proxy_set_user_data (codedbuf_proxy,
-        picture, (GDestroyNotify) gst_vaapi_mini_object_unref);
-    g_async_queue_push (encoder->codedbuf_queue, codedbuf_proxy);
-    encoder->num_codedbuf_queued++;
 
     /* Try again with any pending reordered frame now available for encoding */
     frame = NULL;
@@ -530,17 +390,9 @@ error_reorder_frame:
     GST_ERROR ("failed to process reordered frames");
     return status;
   }
-error_create_coded_buffer:
-  {
-    GST_ERROR ("failed to allocate coded buffer");
-    gst_vaapi_enc_picture_unref (picture);
-    return GST_VAAPI_ENCODER_STATUS_ERROR_ALLOCATION_FAILED;
-  }
 error_encode:
   {
-    GST_ERROR ("failed to encode frame (status = %d)", status);
     gst_vaapi_enc_picture_unref (picture);
-    gst_vaapi_coded_buffer_proxy_unref (codedbuf_proxy);
     return status;
   }
 }
@@ -597,6 +449,17 @@ error_invalid_buffer:
   }
 }
 
+static inline gboolean
+_get_pending_reordered (GstVaapiEncoder * encoder,
+    GstVaapiEncPicture ** picture, gpointer * state)
+{
+  GstVaapiEncoderClass *const klass = GST_VAAPI_ENCODER_GET_CLASS (encoder);
+
+  if (!klass->get_pending_reordered)
+    return FALSE;
+  return klass->get_pending_reordered (encoder, picture, state);
+}
+
 /**
  * gst_vaapi_encoder_flush:
  * @encoder: a #GstVaapiEncoder
@@ -609,8 +472,28 @@ GstVaapiEncoderStatus
 gst_vaapi_encoder_flush (GstVaapiEncoder * encoder)
 {
   GstVaapiEncoderClass *const klass = GST_VAAPI_ENCODER_GET_CLASS (encoder);
+  GstVaapiEncPicture *picture;
+  GstVaapiEncoderStatus status;
+  gpointer iter = NULL;
+
+  picture = NULL;
+  while (_get_pending_reordered (encoder, &picture, &iter)) {
+    if (!picture)
+      continue;
+    status = gst_vaapi_encoder_encode_and_queue (encoder, picture);
+    if (status != GST_VAAPI_ENCODER_STATUS_SUCCESS)
+      goto error_encode;
+  }
+  g_free (iter);
 
   return klass->flush (encoder);
+
+  /* ERRORS */
+error_encode:
+  {
+    gst_vaapi_enc_picture_unref (picture);
+    return status;
+  }
 }
 
 /**
@@ -936,7 +819,7 @@ gst_vaapi_encoder_reconfigure_internal (GstVaapiEncoder * encoder)
 
   target_percentage =
       (GST_VAAPI_ENCODER_RATE_CONTROL (encoder) == GST_VAAPI_RATECONTROL_CBR) ?
-      100 : 70;
+      100 : encoder->target_percentage;
 
   /* *INDENT-OFF* */
   /* Default values for rate control parameter */
@@ -972,6 +855,24 @@ gst_vaapi_encoder_reconfigure_internal (GstVaapiEncoder * encoder)
   GST_INFO ("Quality level is fixed to %d",
       GST_VAAPI_ENCODER_QUALITY_LEVEL (encoder));
 #endif
+
+  if (encoder->trellis) {
+#if VA_CHECK_VERSION(1,0,0)
+    guint quantization_method = 0;
+    if (get_config_attribute (encoder, VAConfigAttribEncQuantization,
+            &quantization_method) == FALSE
+        || !(quantization_method & VA_ENC_QUANTIZATION_TRELLIS_SUPPORTED)) {
+
+      GST_INFO ("Trellis Quantization is not supported,"
+          " trellis will be disabled");
+      encoder->trellis = FALSE;
+    }
+#else
+    GST_INFO ("The encode trellis quantization option is not supported"
+        " in this VAAPI version.");
+    encoder->trellis = FALSE;
+#endif
+  }
 
   codedbuf_size = encoder->codedbuf_pool ?
       gst_vaapi_coded_buffer_pool_get_buffer_size (GST_VAAPI_CODED_BUFFER_POOL
@@ -1038,108 +939,6 @@ gst_vaapi_encoder_set_codec_state (GstVaapiEncoder * encoder,
     encoder->video_info = state->info;
   }
   return gst_vaapi_encoder_reconfigure_internal (encoder);
-}
-
-/**
- * gst_vaapi_encoder_set_property:
- * @encoder: a #GstVaapiEncoder
- * @prop_id: the id of the property to change
- * @value: the new value to set
- *
- * Update the requested property, designed by @prop_id, with the
- * supplied @value. A @NULL value argument resets the property to its
- * default value.
- *
- * Return value: a #GstVaapiEncoderStatus
- */
-static GstVaapiEncoderStatus
-set_property (GstVaapiEncoder * encoder, gint prop_id, const GValue * value)
-{
-  GstVaapiEncoderStatus status =
-      GST_VAAPI_ENCODER_STATUS_ERROR_INVALID_PARAMETER;
-
-  g_assert (value != NULL);
-
-  /* Handle codec-specific properties */
-  if (prop_id < 0) {
-    GstVaapiEncoderClass *const klass = GST_VAAPI_ENCODER_GET_CLASS (encoder);
-
-    if (klass->set_property) {
-      if (encoder->num_codedbuf_queued > 0)
-        goto error_operation_failed;
-      status = klass->set_property (encoder, prop_id, value);
-    }
-    return status;
-  }
-
-  /* Handle common properties */
-  switch (prop_id) {
-    case GST_VAAPI_ENCODER_PROP_RATECONTROL:
-      status = gst_vaapi_encoder_set_rate_control (encoder,
-          g_value_get_enum (value));
-      break;
-    case GST_VAAPI_ENCODER_PROP_BITRATE:
-      status = gst_vaapi_encoder_set_bitrate (encoder,
-          g_value_get_uint (value));
-      break;
-    case GST_VAAPI_ENCODER_PROP_KEYFRAME_PERIOD:
-      status = gst_vaapi_encoder_set_keyframe_period (encoder,
-          g_value_get_uint (value));
-      break;
-    case GST_VAAPI_ENCODER_PROP_TUNE:
-      status = gst_vaapi_encoder_set_tuning (encoder, g_value_get_enum (value));
-      break;
-    case GST_VAAPI_ENCODER_PROP_QUALITY_LEVEL:
-      status = gst_vaapi_encoder_set_quality_level (encoder,
-          g_value_get_uint (value));
-      break;
-    case GST_VAAPI_ENCODER_PROP_DEFAULT_ROI_VALUE:
-      encoder->default_roi_value = g_value_get_int (value);
-      status = GST_VAAPI_ENCODER_STATUS_SUCCESS;
-      break;
-  }
-  return status;
-
-  /* ERRORS */
-error_operation_failed:
-  {
-    GST_ERROR ("could not change codec state after encoding started");
-    return GST_VAAPI_ENCODER_STATUS_ERROR_OPERATION_FAILED;
-  }
-}
-
-GstVaapiEncoderStatus
-gst_vaapi_encoder_set_property (GstVaapiEncoder * encoder, gint prop_id,
-    const GValue * value)
-{
-  GstVaapiEncoderStatus status;
-  GValue default_value = G_VALUE_INIT;
-
-  g_return_val_if_fail (encoder != NULL,
-      GST_VAAPI_ENCODER_STATUS_ERROR_INVALID_PARAMETER);
-
-  if (!value) {
-    GParamSpec *const pspec = prop_find_pspec (encoder, prop_id);
-    if (!pspec)
-      goto error_invalid_property;
-
-    g_value_init (&default_value, pspec->value_type);
-    g_param_value_set_default (pspec, &default_value);
-    value = &default_value;
-  }
-
-  status = set_property (encoder, prop_id, value);
-
-  if (default_value.g_type)
-    g_value_unset (&default_value);
-  return status;
-
-  /* ERRORS */
-error_invalid_property:
-  {
-    GST_ERROR ("unsupported property (%d)", prop_id);
-    return GST_VAAPI_ENCODER_STATUS_ERROR_INVALID_PARAMETER;
-  }
 }
 
 /* Determine the supported rate control modes */
@@ -1244,6 +1043,28 @@ gst_vaapi_encoder_set_bitrate (GstVaapiEncoder * encoder, guint bitrate)
   }
 
   encoder->bitrate = bitrate;
+  return GST_VAAPI_ENCODER_STATUS_SUCCESS;
+}
+
+GstVaapiEncoderStatus
+gst_vaapi_encoder_set_target_percentage (GstVaapiEncoder * encoder,
+    guint target_percentage)
+{
+  g_return_val_if_fail (encoder != NULL, 0);
+
+  if (encoder->target_percentage != target_percentage
+      && encoder->num_codedbuf_queued > 0) {
+    if (GST_VAAPI_ENCODER_RATE_CONTROL (encoder) != GST_VAAPI_RATECONTROL_CBR) {
+      GST_INFO ("Target percentage is changed to %d on runtime",
+          target_percentage);
+      encoder->target_percentage = target_percentage;
+      return gst_vaapi_encoder_reconfigure_internal (encoder);
+    }
+    GST_WARNING ("Target percentage is ignored for CBR rate-control");
+    return GST_VAAPI_ENCODER_STATUS_SUCCESS;
+  }
+
+  encoder->target_percentage = target_percentage;
   return GST_VAAPI_ENCODER_STATUS_SUCCESS;
 }
 
@@ -1354,55 +1175,158 @@ error_operation_failed:
   }
 }
 
-/* Initialize default values for configurable properties */
-static gboolean
-gst_vaapi_encoder_init_properties (GstVaapiEncoder * encoder)
+/**
+ * gst_vaapi_encoder_set_trellis:
+ * @encoder: a #GstVaapiEncoder
+ * @trellis: whether to use trellis quantization
+ *
+ * Notifies the @encoder to use the supplied @trellis option.
+ *
+ * Note: currently, the tuning option can only be specified before the
+ * last call to gst_vaapi_encoder_set_codec_state(), which shall occur
+ * before the first frame is encoded. Afterwards, any change to this
+ * parameter causes gst_vaapi_encoder_set_tuning() to return
+ * @GST_VAAPI_ENCODER_STATUS_ERROR_OPERATION_FAILED.
+ *
+ * Return value: a #GstVaapiEncoderStatus
+ */
+GstVaapiEncoderStatus
+gst_vaapi_encoder_set_trellis (GstVaapiEncoder * encoder, gboolean trellis)
 {
-  GstVaapiEncoderClass *const klass = GST_VAAPI_ENCODER_GET_CLASS (encoder);
-  GPtrArray *props;
-  guint i;
+  g_return_val_if_fail (encoder != NULL, 0);
 
-  props = klass->get_default_properties ();
-  if (!props)
-    return FALSE;
+  if (encoder->trellis != trellis && encoder->num_codedbuf_queued > 0)
+    goto error_operation_failed;
 
-  encoder->properties = props;
-  for (i = 0; i < props->len; i++) {
-    GstVaapiEncoderPropInfo *const prop = g_ptr_array_index (props, i);
+  encoder->trellis = trellis;
+  return GST_VAAPI_ENCODER_STATUS_SUCCESS;
 
-    if (gst_vaapi_encoder_set_property (encoder, prop->prop,
-            NULL) != GST_VAAPI_ENCODER_STATUS_SUCCESS)
-      return FALSE;
+  /* ERRORS */
+error_operation_failed:
+  {
+    GST_ERROR ("could not change trellis options after encoding started");
+    return GST_VAAPI_ENCODER_STATUS_ERROR_OPERATION_FAILED;
   }
-
-  return TRUE;
 }
 
-/* Base encoder initialization (internal) */
-static gboolean
-gst_vaapi_encoder_init (GstVaapiEncoder * encoder, GstVaapiDisplay * display)
+G_DEFINE_ABSTRACT_TYPE (GstVaapiEncoder, gst_vaapi_encoder, GST_TYPE_OBJECT);
+
+/**
+ * GstVaapiEncoderProp:
+ * @ENCODER_PROP_DISPLAY: The display.
+ * @ENCODER_PROP_BITRATE: Bitrate expressed in kbps (uint).
+ * @ENCODER_PROP_TARGET_PERCENTAGE: Desired target percentage of
+ *  bitrate for variable rate controls.
+ * @ENCODER_PROP_KEYFRAME_PERIOD: The maximal distance
+ *   between two keyframes (uint).
+ * @ENCODER_PROP_DEFAULT_ROI_VALUE: The default delta qp to apply
+ *   to each region of interest.
+ * @ENCODER_PROP_TRELLIS: Use trellis quantization method (gboolean).
+ *
+ * The set of configurable properties for the encoder.
+ */
+enum
 {
-  GstVaapiEncoderClass *const klass = GST_VAAPI_ENCODER_GET_CLASS (encoder);
+  ENCODER_PROP_DISPLAY = 1,
+  ENCODER_PROP_BITRATE,
+  ENCODER_PROP_TARGET_PERCENTAGE,
+  ENCODER_PROP_KEYFRAME_PERIOD,
+  ENCODER_PROP_QUALITY_LEVEL,
+  ENCODER_PROP_DEFAULT_ROI_VALUE,
+  ENCODER_PROP_TRELLIS,
+  ENCODER_N_PROPERTIES
+};
 
-  g_return_val_if_fail (display != NULL, FALSE);
+static GParamSpec *properties[ENCODER_N_PROPERTIES];
 
-#define CHECK_VTABLE_HOOK(FUNC) do {            \
-    if (!klass->FUNC)                           \
-      goto error_invalid_vtable;                \
-  } while (0)
+static void
+gst_vaapi_encoder_set_property (GObject * object, guint prop_id,
+    const GValue * value, GParamSpec * pspec)
+{
+  GstVaapiEncoder *encoder = GST_VAAPI_ENCODER (object);
+  GstVaapiEncoderStatus status = GST_VAAPI_ENCODER_STATUS_SUCCESS;
 
-  CHECK_VTABLE_HOOK (init);
-  CHECK_VTABLE_HOOK (finalize);
-  CHECK_VTABLE_HOOK (get_default_properties);
-  CHECK_VTABLE_HOOK (reconfigure);
-  CHECK_VTABLE_HOOK (encode);
-  CHECK_VTABLE_HOOK (reordering);
-  CHECK_VTABLE_HOOK (flush);
+  switch (prop_id) {
+    case ENCODER_PROP_DISPLAY:
+      g_assert (encoder->display == NULL);
+      encoder->display = g_value_dup_object (value);
+      g_assert (encoder->display != NULL);
+      encoder->va_display = GST_VAAPI_DISPLAY_VADISPLAY (encoder->display);
+      break;
+    case ENCODER_PROP_BITRATE:
+      status = gst_vaapi_encoder_set_bitrate (encoder,
+          g_value_get_uint (value));
+      break;
+    case ENCODER_PROP_TARGET_PERCENTAGE:
+      status =
+          gst_vaapi_encoder_set_target_percentage (encoder,
+          g_value_get_uint (value));
+      break;
+    case ENCODER_PROP_KEYFRAME_PERIOD:
+      status =
+          gst_vaapi_encoder_set_keyframe_period (encoder,
+          g_value_get_uint (value));
+      break;
+    case ENCODER_PROP_QUALITY_LEVEL:
+      status =
+          gst_vaapi_encoder_set_quality_level (encoder,
+          g_value_get_uint (value));
+      break;
+    case ENCODER_PROP_DEFAULT_ROI_VALUE:
+      encoder->default_roi_value = g_value_get_int (value);
+      status = GST_VAAPI_ENCODER_STATUS_SUCCESS;
+      break;
+    case ENCODER_PROP_TRELLIS:
+      status =
+          gst_vaapi_encoder_set_trellis (encoder, g_value_get_boolean (value));
+      break;
+    default:
+      G_OBJECT_WARN_INVALID_PROPERTY_ID (object, prop_id, pspec);
+      break;
+  }
 
-#undef CHECK_VTABLE_HOOK
+  if (status)
+    GST_WARNING_OBJECT (encoder, "Failed to set the property:%s, error is %d",
+        g_param_spec_get_name (pspec), status);
+}
 
-  encoder->display = gst_object_ref (display);
-  encoder->va_display = gst_vaapi_display_get_display (display);
+static void
+gst_vaapi_encoder_get_property (GObject * object, guint prop_id,
+    GValue * value, GParamSpec * pspec)
+{
+  GstVaapiEncoder *encoder = GST_VAAPI_ENCODER (object);
+
+  switch (prop_id) {
+    case ENCODER_PROP_DISPLAY:
+      g_value_set_object (value, encoder->display);
+      break;
+    case ENCODER_PROP_BITRATE:
+      g_value_set_uint (value, encoder->bitrate);
+      break;
+    case ENCODER_PROP_TARGET_PERCENTAGE:
+      g_value_set_uint (value, encoder->target_percentage);
+      break;
+    case ENCODER_PROP_KEYFRAME_PERIOD:
+      g_value_set_uint (value, encoder->keyframe_period);
+      break;
+    case ENCODER_PROP_QUALITY_LEVEL:
+      g_value_set_uint (value, GST_VAAPI_ENCODER_QUALITY_LEVEL (encoder));
+      break;
+    case ENCODER_PROP_DEFAULT_ROI_VALUE:
+      g_value_set_int (value, encoder->default_roi_value);
+      break;
+    case ENCODER_PROP_TRELLIS:
+      g_value_set_boolean (value, encoder->trellis);
+      break;
+    default:
+      G_OBJECT_WARN_INVALID_PROPERTY_ID (object, prop_id, pspec);
+      break;
+  }
+}
+
+static void
+gst_vaapi_encoder_init (GstVaapiEncoder * encoder)
+{
   encoder->va_context = VA_INVALID_ID;
 
   gst_video_info_init (&encoder->video_info);
@@ -1413,30 +1337,13 @@ gst_vaapi_encoder_init (GstVaapiEncoder * encoder, GstVaapiDisplay * display)
 
   encoder->codedbuf_queue = g_async_queue_new_full ((GDestroyNotify)
       gst_vaapi_coded_buffer_proxy_unref);
-  if (!encoder->codedbuf_queue)
-    return FALSE;
-
-  if (!klass->init (encoder))
-    return FALSE;
-  if (!gst_vaapi_encoder_init_properties (encoder))
-    return FALSE;
-  return TRUE;
-
-  /* ERRORS */
-error_invalid_vtable:
-  {
-    GST_ERROR ("invalid subclass hook (internal error)");
-    return FALSE;
-  }
 }
 
 /* Base encoder cleanup (internal) */
-void
-gst_vaapi_encoder_finalize (GstVaapiEncoder * encoder)
+static void
+gst_vaapi_encoder_finalize (GObject * object)
 {
-  GstVaapiEncoderClass *const klass = GST_VAAPI_ENCODER_GET_CLASS (encoder);
-
-  klass->finalize (encoder);
+  GstVaapiEncoder *encoder = GST_VAAPI_ENCODER (object);
 
   gst_vaapi_object_replace (&encoder->context, NULL);
   gst_vaapi_display_replace (&encoder->display, NULL);
@@ -1455,30 +1362,120 @@ gst_vaapi_encoder_finalize (GstVaapiEncoder * encoder)
   g_cond_clear (&encoder->surface_free);
   g_cond_clear (&encoder->codedbuf_free);
   g_mutex_clear (&encoder->mutex);
+
+  G_OBJECT_CLASS (gst_vaapi_encoder_parent_class)->finalize (object);
 }
 
-/* Helper function to create new GstVaapiEncoder instances (internal) */
-GstVaapiEncoder *
-gst_vaapi_encoder_new (const GstVaapiEncoderClass * klass,
-    GstVaapiDisplay * display)
+static void
+gst_vaapi_encoder_class_init (GstVaapiEncoderClass * klass)
 {
-  GstVaapiEncoder *encoder;
+  GObjectClass *const object_class = G_OBJECT_CLASS (klass);
 
-  encoder = (GstVaapiEncoder *)
-      gst_vaapi_mini_object_new0 (GST_VAAPI_MINI_OBJECT_CLASS (klass));
-  if (!encoder)
-    return NULL;
+  object_class->set_property = gst_vaapi_encoder_set_property;
+  object_class->get_property = gst_vaapi_encoder_get_property;
+  object_class->finalize = gst_vaapi_encoder_finalize;
 
-  if (!gst_vaapi_encoder_init (encoder, display))
-    goto error;
-  return encoder;
+  /**
+   * GstVaapiDecoder:display:
+   *
+   * #GstVaapiDisplay to be used.
+   */
+  properties[ENCODER_PROP_DISPLAY] =
+      g_param_spec_object ("display", "Gst VA-API Display",
+      "The VA-API display object to use", GST_TYPE_VAAPI_DISPLAY,
+      G_PARAM_READWRITE | G_PARAM_CONSTRUCT_ONLY | G_PARAM_STATIC_NAME);
 
-  /* ERRORS */
-error:
-  {
-    gst_vaapi_encoder_unref (encoder);
-    return NULL;
-  }
+  /**
+   * GstVaapiEncoder:bitrate:
+   *
+   * The desired bitrate, expressed in kbps.
+   * This is available when rate-control is CBR or VBR.
+   *
+   * CBR: This applies equally to minimum, maximum and target bitrate in the driver.
+   * VBR: This applies to maximum bitrate in the driver.
+   *      Minimum bitrate will be calculated like the following in the driver.
+   *      if (target percentage < 50) minimum bitrate = 0
+   *      else minimum bitrate = maximum bitrate * (2 * target percentage -100) / 100
+   *      Target bitrate will be calculated like the following in the driver.
+   *      target bitrate = maximum bitrate * target percentage / 100
+   */
+  properties[ENCODER_PROP_BITRATE] =
+      g_param_spec_uint ("bitrate",
+      "Bitrate (kbps)",
+      "The desired bitrate expressed in kbps (0: auto-calculate)",
+      0, 2000 * 1024, 0,
+      G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS | G_PARAM_CONSTRUCT |
+      GST_VAAPI_PARAM_ENCODER_EXPOSURE);
+
+  /**
+   * GstVaapiEncoder:target-percentage:
+   *
+   * The desired target percentage of bitrate for variable rate controls.
+   */
+  properties[ENCODER_PROP_TARGET_PERCENTAGE] =
+      g_param_spec_uint ("target-percentage",
+      "Target Percentage",
+      "The desired target percentage of bitrate for variable rate "
+      "controls.", 1, 100, 70,
+      G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS | G_PARAM_CONSTRUCT |
+      GST_VAAPI_PARAM_ENCODER_EXPOSURE);
+
+  /**
+   * GstVaapiEncoder:keyframe-period:
+   *
+   * The maximal distance between two keyframes.
+   */
+  properties[ENCODER_PROP_KEYFRAME_PERIOD] =
+      g_param_spec_uint ("keyframe-period",
+      "Keyframe Period",
+      "Maximal distance between two keyframes (0: auto-calculate)", 0,
+      G_MAXUINT32, 30,
+      G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS | G_PARAM_CONSTRUCT |
+      GST_VAAPI_PARAM_ENCODER_EXPOSURE);
+
+  /**
+   * GstVaapiEncoder:quality-level:
+   *
+   * The Encoding quality level.
+   */
+  properties[ENCODER_PROP_QUALITY_LEVEL] =
+      g_param_spec_uint ("quality-level",
+      "Quality Level", "Encoding Quality Level "
+      "(lower value means higher-quality/slow-encode, "
+      " higher value means lower-quality/fast-encode)",
+      1, 7, 4, G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS | G_PARAM_CONSTRUCT |
+      GST_VAAPI_PARAM_ENCODER_EXPOSURE);
+
+  /**
+   * GstVapiEncoder:roi-default-delta-qp
+   *
+   * Default delta-qp to apply to each Region of Interest
+   */
+  properties[ENCODER_PROP_DEFAULT_ROI_VALUE] =
+      g_param_spec_int ("default-roi-delta-qp", "Default ROI delta QP",
+      "The default delta-qp to apply to each Region of Interest"
+      "(lower value means higher-quality, "
+      "higher value means lower-quality)",
+      -10, 10, -10,
+      G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS | G_PARAM_CONSTRUCT |
+      GST_VAAPI_PARAM_ENCODER_EXPOSURE);
+
+  /**
+   * GstVaapiEncoder: trellis:
+   *
+   * The trellis quantization method the encoder can use.
+   * Trellis is an improved quantization algorithm.
+   *
+   */
+  properties[ENCODER_PROP_TRELLIS] =
+      g_param_spec_boolean ("trellis",
+      "Trellis Quantization",
+      "The Trellis Quantization Method of Encoder",
+      FALSE, G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS | G_PARAM_CONSTRUCT |
+      GST_VAAPI_PARAM_ENCODER_EXPOSURE);
+
+  g_object_class_install_properties (object_class, ENCODER_N_PROPERTIES,
+      properties);
 }
 
 static GstVaapiContext *
@@ -1676,6 +1673,14 @@ gst_vaapi_encoder_ensure_max_num_ref_frames (GstVaapiEncoder * encoder,
   encoder->max_num_ref_frames_1 = (max_ref_frames >> 16) & 0xffff;
 
   return TRUE;
+}
+
+GstVaapiProfile
+gst_vaapi_encoder_get_profile (GstVaapiEncoder * encoder)
+{
+  g_return_val_if_fail (encoder, GST_VAAPI_PROFILE_UNKNOWN);
+
+  return encoder->profile;
 }
 
 /** Returns a GType for the #GstVaapiEncoderTune set */

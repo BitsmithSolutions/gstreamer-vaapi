@@ -1,6 +1,6 @@
 project('gstreamer-vaapi', 'c',
-  version : '1.15.0.1',
-  meson_version : '>= 0.46.0',
+  version : '1.17.0.1',
+  meson_version : '>= 0.48.0',
   default_options : [ 'warning_level=1',
                       'buildtype=debugoptimized' ])
 
@@ -15,8 +15,9 @@ else
   gst_version_nano = 0
 endif
 
-libva_req = ['>= 0.30.4', '!= 0.99.0']
-glib_req = '>= 2.40.0'
+libva_req = ['>= 0.39.0', '!= 0.99.0']
+glib_req = '>= 2.44.0'
+libwayland_req = '>= 1.11.0'
 gst_req = '>= @0@.@1@.0'.format(gst_version_major, gst_version_minor)
 
 cc = meson.get_compiler('c')
@@ -51,22 +52,45 @@ gstcodecparsers_dep = dependency('gstreamer-codecparsers-1.0', version : gst_req
     fallback : ['gst-plugins-bad', 'gstcodecparsers_dep'])
 gstgl_dep = dependency('gstreamer-gl-1.0', version : gst_req,
     fallback : ['gst-plugins-base', 'gstgl_dep'], required: false)
+
+# Disable compiler warnings for unused variables and args if gst debug system is disabled
+if gst_dep.type_name() == 'internal'
+  gst_debug_disabled = not subproject('gstreamer').get_variable('gst_debug')
+else
+  # We can't check that in the case of subprojects as we won't
+  # be able to build against an internal dependency (which is not built yet)
+  gst_debug_disabled = cc.has_header_symbol('gst/gstconfig.h', 'GST_DISABLE_GST_DEBUG', dependencies: gst_dep)
+endif
+
+if gst_debug_disabled
+  message('GStreamer debug system is disabled')
+  add_project_arguments(cc.get_supported_arguments(['-Wno-unused']), language: 'c')
+else
+  message('GStreamer debug system is enabled')
+endif
+
+# Other deps
 gmodule_dep = dependency('gmodule-2.0', required: false)
 libva_dep = dependency('libva', version: libva_req)
 
-libva_drm_dep = dependency('libva-drm', version: '>= 0.33.0', required: false)
-libva_wayland_dep = dependency('libva-wayland', version: '>= 0.33.0', required: false)
-libva_x11_dep = dependency('libva-x11', version: '>= 0.31.0', required: false)
+libva_drm_dep = dependency('libva-drm', version: libva_req, required: false)
+libva_wayland_dep = dependency('libva-wayland', version: libva_req, required: false)
+libva_x11_dep = dependency('libva-x11', version: libva_req, required: false)
 libdrm_dep = dependency('libdrm', required: false)
 libudev_dep = dependency('libudev', required: false)
 egl_dep = dependency('egl', required: false)
 gl_dep = dependency('gl', required: false)
 glesv2_dep = dependency('glesv2', required: false)
 libdl_dep = cc.find_library('dl', required: false)
-wayland_client_dep = dependency('wayland-client', required: false)
+wayland_client_dep = dependency('wayland-client', version: libwayland_req, required: false)
+wayland_protocols_dep = dependency('wayland-protocols', version: '>= 1.15', required: false)
+wayland_scanner_bin = find_program('wayland-scanner', required: false)
 x11_dep = dependency('x11', required: false)
 xrandr_dep = dependency('xrandr', required: false)
 xrender_dep = dependency('xrender', required: false)
+
+# some of the examples can use GTK+-3
+gtk_dep = dependency('gtk+-3.0', version : '>= 3.10', required : get_option('examples'))
 
 GLES_VERSION_MASK = gl_dep.found() ? 1 : 0
 if glesv2_dep.found()
@@ -81,23 +105,19 @@ if glesv2_dep.found()
   endif
 endif
 
-USE_ENCODERS = libva_dep.version().version_compare('>= 0.34.0') and get_option('with_encoders') != 'no'
-USE_H265_DECODER = cc.has_header('va/va_dec_hevc.h', dependencies: libva_dep, prefix: '#include <va/va.h>')
-USE_H265_ENCODER = USE_ENCODERS and cc.has_header('va/va_enc_hevc.h', dependencies: libva_dep, prefix: '#include <va/va.h>')
-USE_JPEG_DECODER = cc.has_header('va/va_dec_jpeg.h', dependencies: libva_dep, prefix: '#include <va/va.h>')
-USE_JPEG_ENCODER = USE_ENCODERS and cc.has_header('va/va_enc_jpeg.h', dependencies: libva_dep, prefix: '#include <va/va.h>')
-USE_VP8_DECODER = cc.has_header('va/va_dec_vp8.h', dependencies: libva_dep, prefix: '#include <va/va.h>')
-USE_VP8_ENCODER = USE_ENCODERS and cc.has_header('va/va_enc_vp8.h', dependencies: libva_dep, prefix: '#include <va/va.h>')
-USE_VP9_DECODER = cc.has_header('va/va_dec_vp9.h', dependencies: libva_dep, prefix: '#include <va/va.h>')
+USE_ENCODERS = get_option('with_encoders') != 'no'
 USE_VP9_ENCODER = USE_ENCODERS and cc.has_header('va/va_enc_vp9.h', dependencies: libva_dep, prefix: '#include <va/va.h>')
-
-USE_VPP = cc.has_header('va/va_vpp.h', dependencies: libva_dep, prefix: '#include <va/va_vpp.h>')
+USE_H264_FEI_ENCODER = USE_ENCODERS and cc.has_header('va/va_fei_h264.h', dependencies: libva_dep, prefix: '#include <va/va.h>')
 
 USE_DRM = libva_drm_dep.found() and libdrm_dep.found() and libudev_dep.found() and get_option('with_drm') != 'no'
 USE_EGL = gmodule_dep.found() and egl_dep.found() and GLES_VERSION_MASK != 0 and get_option('with_egl') != 'no'
 USE_GLX = libva_x11_dep.found() and x11_dep.found() and gl_dep.found() and libdl_dep.found() and get_option('with_glx') != 'no'
-USE_WAYLAND = libva_wayland_dep.found() and wayland_client_dep.found() and get_option('with_wayland') != 'no'
+USE_WAYLAND = libva_wayland_dep.found() and wayland_client_dep.found() and wayland_protocols_dep.found() and wayland_scanner_bin.found() and get_option('with_wayland') != 'no'
 USE_X11 = libva_x11_dep.found() and x11_dep.found() and get_option('with_x11') != 'no'
+
+if not (USE_DRM or USE_X11 or USE_EGL or USE_GLX or USE_WAYLAND)
+  error('No renderer API found (it is requried either DRM, X11 and/or WAYLAND)')
+endif
 
 driverdir = libva_dep.get_pkgconfig_variable('driverdir')
 if driverdir == ''
@@ -117,53 +137,15 @@ cdata.set10('USE_DRM', USE_DRM)
 cdata.set10('USE_EGL', USE_EGL)
 cdata.set10('USE_ENCODERS', USE_ENCODERS)
 cdata.set10('USE_GLX', USE_GLX)
-cdata.set10('USE_H265_DECODER', USE_H265_DECODER)
-cdata.set10('USE_H265_ENCODER', USE_H265_ENCODER)
-cdata.set10('USE_JPEG_DECODER', USE_JPEG_DECODER)
-cdata.set10('USE_JPEG_ENCODER', USE_JPEG_ENCODER)
-cdata.set10('USE_VP8_DECODER', USE_VP8_DECODER)
-cdata.set10('USE_VP8_ENCODER', USE_VP8_ENCODER)
-cdata.set10('USE_VP9_DECODER', USE_VP9_DECODER)
 cdata.set10('USE_VP9_ENCODER', USE_VP9_ENCODER)
+cdata.set10('USE_H264_FEI_ENCODER', USE_H264_FEI_ENCODER)
 cdata.set10('USE_WAYLAND', USE_WAYLAND)
 cdata.set10('USE_X11', USE_X11)
 cdata.set10('HAVE_XKBLIB', cc.has_header('X11/XKBlib.h', dependencies: x11_dep))
 cdata.set10('HAVE_XRANDR', xrandr_dep.found())
 cdata.set10('HAVE_XRENDER', xrender_dep.found())
-cdata.set10('USE_VA_VPP', USE_VPP)
 cdata.set10('USE_GST_GL_HELPERS', gstgl_dep.found())
 cdata.set('USE_GLES_VERSION_MASK', GLES_VERSION_MASK)
-
-if libva_dep.version().version_compare('< 0.38.0')
-  check_headers = [
-    [USE_H265_DECODER, 'HAVE_VA_VA_DEC_HEVC_H'],
-    [USE_H265_ENCODER, 'HAVE_VA_VA_ENC_HEVC_H'],
-    [USE_JPEG_DECODER, 'HAVE_VA_VA_DEC_JPEG_H'],
-    [USE_JPEG_ENCODER, 'HAVE_VA_VA_ENC_JPEG_H'],
-    [USE_VP8_DECODER, 'HAVE_VA_VA_DEC_VP8_H'],
-    [USE_VP8_ENCODER, 'HAVE_VA_VA_ENC_VP8_H'],
-    [USE_VP9_DECODER, 'HAVE_VA_VA_DEC_VP9_H'],
-    [USE_VP9_ENCODER, 'HAVE_VA_VA_DEC_VP9_H'],
-    [USE_VPP, 'HAVE_VA_VA_VPP_H'],
-  ]
-  foreach h : check_headers
-    if h.get(0)
-      cdata.set(h.get(1), 1)
-    endif
-  endforeach
-
-  if USE_ENCODERS
-    check_headers = [
-      ['HAVE_VA_VA_ENC_MPEG2_H', 'va/va_enc_mpeg2.h'],
-      ['HAVE_VA_VA_ENC_H264_H', 'va/va_enc_h264.h'],
-    ]
-    foreach h : check_headers
-      if cc.has_header(h.get(1), dependencies: libva_dep, prefix: '#include <va/va.h>')
-        cdata.set(h.get(0), 1)
-      endif
-    endforeach
-  endif
-endif
 
 api_version = '1.0'
 soversion = 0
@@ -182,7 +164,10 @@ libsinc = include_directories('gst-libs')
 
 subdir('gst-libs')
 subdir('gst')
-#subdir('tests')
+if not get_option('examples').disabled()
+  subdir('tests')
+endif
+subdir('docs')
 
-python3 = import('python3').find_python()
+python3 = import('python').find_installation()
 run_command(python3, '-c', 'import shutil; shutil.copy("hooks/pre-commit.hook", ".git/hooks/pre-commit")')

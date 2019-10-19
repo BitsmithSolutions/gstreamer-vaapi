@@ -109,7 +109,7 @@ ensure_hw_profile (GstVaapiEncoderVP8 * encoder)
 error_unsupported_profile:
   {
     GST_ERROR ("unsupported HW profile %s",
-        gst_vaapi_profile_get_name (encoder->profile));
+        gst_vaapi_profile_get_va_name (encoder->profile));
     return FALSE;
   }
 }
@@ -445,6 +445,11 @@ error:
 static GstVaapiEncoderStatus
 gst_vaapi_encoder_vp8_flush (GstVaapiEncoder * base_encoder)
 {
+  GstVaapiEncoderVP8 *const encoder = GST_VAAPI_ENCODER_VP8 (base_encoder);
+
+  encoder->frame_num = 0;
+  clear_references (encoder);
+
   return GST_VAAPI_ENCODER_STATUS_SUCCESS;
 }
 
@@ -505,58 +510,174 @@ error:
   }
 }
 
-static gboolean
-gst_vaapi_encoder_vp8_init (GstVaapiEncoder * base_encoder)
+struct _GstVaapiEncoderVP8Class
 {
-  GstVaapiEncoderVP8 *const encoder = GST_VAAPI_ENCODER_VP8 (base_encoder);
+  GstVaapiEncoderClass parent_class;
+};
 
+G_DEFINE_TYPE (GstVaapiEncoderVP8, gst_vaapi_encoder_vp8,
+    GST_TYPE_VAAPI_ENCODER);
+
+static void
+gst_vaapi_encoder_vp8_init (GstVaapiEncoderVP8 * encoder)
+{
   encoder->frame_num = 0;
   encoder->last_ref = NULL;
   encoder->golden_ref = NULL;
   encoder->alt_ref = NULL;
-
-  return TRUE;
 }
 
 static void
-gst_vaapi_encoder_vp8_finalize (GstVaapiEncoder * base_encoder)
+gst_vaapi_encoder_vp8_finalize (GObject * object)
 {
-  GstVaapiEncoderVP8 *const encoder = GST_VAAPI_ENCODER_VP8 (base_encoder);
+  GstVaapiEncoderVP8 *const encoder = GST_VAAPI_ENCODER_VP8 (object);
   clear_references (encoder);
+  G_OBJECT_CLASS (gst_vaapi_encoder_vp8_parent_class)->finalize (object);
 }
 
-static GstVaapiEncoderStatus
-gst_vaapi_encoder_vp8_set_property (GstVaapiEncoder * base_encoder,
-    gint prop_id, const GValue * value)
+/**
+ * @ENCODER_VP8_PROP_RATECONTROL: Rate control (#GstVaapiRateControl).
+ * @ENCODER_VP8_PROP_TUNE: The tuning options (#GstVaapiEncoderTune).
+ * @ENCODER_VP8_PROP_LOOP_FILTER_LEVEL: Loop Filter Level(uint).
+ * @ENCODER_VP8_PROP_LOOP_SHARPNESS_LEVEL: Sharpness Level(uint).
+ * @ENCODER_VP8_PROP_YAC_Q_INDEX: Quantization table index for luma AC(uint).
+ *
+ * The set of VP8 encoder specific configurable properties.
+ */
+enum
 {
-  GstVaapiEncoderVP8 *const encoder = GST_VAAPI_ENCODER_VP8 (base_encoder);
+  ENCODER_VP8_PROP_RATECONTROL = 1,
+  ENCODER_VP8_PROP_TUNE,
+  ENCODER_VP8_PROP_LOOP_FILTER_LEVEL,
+  ENCODER_VP8_PROP_SHARPNESS_LEVEL,
+  ENCODER_VP8_PROP_YAC_Q_INDEX,
+  ENCODER_VP8_N_PROPERTIES
+};
+
+static GParamSpec *properties[ENCODER_VP8_N_PROPERTIES];
+
+static void
+gst_vaapi_encoder_vp8_set_property (GObject * object, guint prop_id,
+    const GValue * value, GParamSpec * pspec)
+{
+  GstVaapiEncoder *const base_encoder = GST_VAAPI_ENCODER (object);
+  GstVaapiEncoderVP8 *const encoder = GST_VAAPI_ENCODER_VP8 (object);
+
+  if (base_encoder->num_codedbuf_queued > 0) {
+    GST_ERROR_OBJECT (object,
+        "failed to set any property after encoding started");
+    return;
+  }
 
   switch (prop_id) {
-    case GST_VAAPI_ENCODER_VP8_PROP_LOOP_FILTER_LEVEL:
+    case ENCODER_VP8_PROP_RATECONTROL:
+      gst_vaapi_encoder_set_rate_control (base_encoder,
+          g_value_get_enum (value));
+      break;
+    case ENCODER_VP8_PROP_TUNE:
+      gst_vaapi_encoder_set_tuning (base_encoder, g_value_get_enum (value));
+      break;
+    case ENCODER_VP8_PROP_LOOP_FILTER_LEVEL:
       encoder->loop_filter_level = g_value_get_uint (value);
       break;
-    case GST_VAAPI_ENCODER_VP8_PROP_SHARPNESS_LEVEL:
+    case ENCODER_VP8_PROP_SHARPNESS_LEVEL:
       encoder->sharpness_level = g_value_get_uint (value);
       break;
-    case GST_VAAPI_ENCODER_VP8_PROP_YAC_Q_INDEX:
+    case ENCODER_VP8_PROP_YAC_Q_INDEX:
       encoder->yac_qi = g_value_get_uint (value);
       break;
     default:
-      return GST_VAAPI_ENCODER_STATUS_ERROR_INVALID_PARAMETER;
+      G_OBJECT_WARN_INVALID_PROPERTY_ID (object, prop_id, pspec);
   }
-  return GST_VAAPI_ENCODER_STATUS_SUCCESS;
+}
+
+static void
+gst_vaapi_encoder_vp8_get_property (GObject * object, guint prop_id,
+    GValue * value, GParamSpec * pspec)
+{
+  GstVaapiEncoderVP8 *const encoder = GST_VAAPI_ENCODER_VP8 (object);
+  GstVaapiEncoder *const base_encoder = GST_VAAPI_ENCODER (object);
+
+  switch (prop_id) {
+    case ENCODER_VP8_PROP_RATECONTROL:
+      g_value_set_enum (value, base_encoder->rate_control);
+      break;
+    case ENCODER_VP8_PROP_TUNE:
+      g_value_set_enum (value, base_encoder->tune);
+      break;
+    case ENCODER_VP8_PROP_LOOP_FILTER_LEVEL:
+      g_value_set_uint (value, encoder->loop_filter_level);
+      break;
+    case ENCODER_VP8_PROP_SHARPNESS_LEVEL:
+      g_value_set_uint (value, encoder->sharpness_level);
+      break;
+    case ENCODER_VP8_PROP_YAC_Q_INDEX:
+      g_value_set_uint (value, encoder->yac_qi);
+      break;
+    default:
+      G_OBJECT_WARN_INVALID_PROPERTY_ID (object, prop_id, pspec);
+  }
 }
 
 GST_VAAPI_ENCODER_DEFINE_CLASS_DATA (VP8);
 
-static inline const GstVaapiEncoderClass *
-gst_vaapi_encoder_vp8_class (void)
+static void
+gst_vaapi_encoder_vp8_class_init (GstVaapiEncoderVP8Class * klass)
 {
-  static const GstVaapiEncoderClass GstVaapiEncoderVP8Class = {
-    GST_VAAPI_ENCODER_CLASS_INIT (VP8, vp8),
-    .set_property = gst_vaapi_encoder_vp8_set_property,
-  };
-  return &GstVaapiEncoderVP8Class;
+  GObjectClass *const object_class = G_OBJECT_CLASS (klass);
+  GstVaapiEncoderClass *const encoder_class = GST_VAAPI_ENCODER_CLASS (klass);
+
+  encoder_class->class_data = &g_class_data;
+  encoder_class->reconfigure = gst_vaapi_encoder_vp8_reconfigure;
+  encoder_class->reordering = gst_vaapi_encoder_vp8_reordering;
+  encoder_class->encode = gst_vaapi_encoder_vp8_encode;
+  encoder_class->flush = gst_vaapi_encoder_vp8_flush;
+
+  object_class->set_property = gst_vaapi_encoder_vp8_set_property;
+  object_class->get_property = gst_vaapi_encoder_vp8_get_property;
+  object_class->finalize = gst_vaapi_encoder_vp8_finalize;
+
+  properties[ENCODER_VP8_PROP_RATECONTROL] =
+      g_param_spec_enum ("rate-control",
+      "Rate Control", "Rate control mode",
+      g_class_data.rate_control_get_type (),
+      g_class_data.default_rate_control,
+      G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS | G_PARAM_CONSTRUCT |
+      GST_VAAPI_PARAM_ENCODER_EXPOSURE);
+
+  properties[ENCODER_VP8_PROP_TUNE] =
+      g_param_spec_enum ("tune", "Encoder Tuning", "Encoder tuning option",
+      g_class_data.encoder_tune_get_type (),
+      g_class_data.default_encoder_tune,
+      G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS | G_PARAM_CONSTRUCT |
+      GST_VAAPI_PARAM_ENCODER_EXPOSURE);
+
+  properties[ENCODER_VP8_PROP_LOOP_FILTER_LEVEL] =
+      g_param_spec_uint ("loop-filter-level", "Loop Filter Level",
+      "Controls the deblocking filter strength", 0, 63,
+      DEFAULT_LOOP_FILTER_LEVEL,
+      G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS | G_PARAM_CONSTRUCT |
+      GST_VAAPI_PARAM_ENCODER_EXPOSURE);
+
+  properties[ENCODER_VP8_PROP_SHARPNESS_LEVEL] =
+      g_param_spec_uint ("sharpness-level", "Sharpness Level",
+      "Controls the deblocking filter sensitivity", 0, 7,
+      DEFAULT_SHARPNESS_LEVEL,
+      G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS | G_PARAM_CONSTRUCT |
+      GST_VAAPI_PARAM_ENCODER_EXPOSURE);
+
+  properties[ENCODER_VP8_PROP_YAC_Q_INDEX] =
+      g_param_spec_uint ("yac-qi",
+      "Luma AC Quant Table index",
+      "Quantization Table index for Luma AC Coefficients,"
+      " (in default case, yac_qi=4 for key frames and yac_qi=40"
+      " for P frames)",
+      0, 127, DEFAULT_YAC_QI,
+      G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS | G_PARAM_CONSTRUCT |
+      GST_VAAPI_PARAM_ENCODER_EXPOSURE);
+
+  g_object_class_install_properties (object_class, ENCODER_VP8_N_PROPERTIES,
+      properties);
 }
 
 /**
@@ -570,52 +691,5 @@ gst_vaapi_encoder_vp8_class (void)
 GstVaapiEncoder *
 gst_vaapi_encoder_vp8_new (GstVaapiDisplay * display)
 {
-  return gst_vaapi_encoder_new (gst_vaapi_encoder_vp8_class (), display);
-}
-
-/**
- * gst_vaapi_encoder_vp8_get_default_properties:
- *
- * Determines the set of common and vp8 specific encoder properties.
- * The caller owns an extra reference to the resulting array of
- * #GstVaapiEncoderPropInfo elements, so it shall be released with
- * g_ptr_array_unref() after usage.
- *
- * Return value: the set of encoder properties for #GstVaapiEncoderVP8,
- *   or %NULL if an error occurred.
- */
-GPtrArray *
-gst_vaapi_encoder_vp8_get_default_properties (void)
-{
-  const GstVaapiEncoderClass *const klass = gst_vaapi_encoder_vp8_class ();
-  GPtrArray *props;
-
-  props = gst_vaapi_encoder_properties_get_default (klass);
-  if (!props)
-    return NULL;
-
-  GST_VAAPI_ENCODER_PROPERTIES_APPEND (props,
-      GST_VAAPI_ENCODER_VP8_PROP_LOOP_FILTER_LEVEL,
-      g_param_spec_uint ("loop-filter-level",
-          "Loop Filter Level",
-          "Controls the deblocking filter strength",
-          0, 63, DEFAULT_LOOP_FILTER_LEVEL,
-          G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS));
-
-  GST_VAAPI_ENCODER_PROPERTIES_APPEND (props,
-      GST_VAAPI_ENCODER_VP8_PROP_SHARPNESS_LEVEL,
-      g_param_spec_uint ("sharpness-level",
-          "Sharpness Level",
-          "Controls the deblocking filter sensitivity",
-          0, 7, DEFAULT_SHARPNESS_LEVEL,
-          G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS));
-
-  GST_VAAPI_ENCODER_PROPERTIES_APPEND (props,
-      GST_VAAPI_ENCODER_VP8_PROP_YAC_Q_INDEX,
-      g_param_spec_uint ("yac-qi",
-          "Luma AC Quant Table index",
-          "Quantization Table index for Luma AC Coefficients, (in default case, yac_qi=4 for key frames and yac_qi=40 for P frames)",
-          0, 127, DEFAULT_YAC_QI, G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS));
-
-  return props;
+  return g_object_new (GST_TYPE_VAAPI_ENCODER_VP8, "display", display, NULL);
 }

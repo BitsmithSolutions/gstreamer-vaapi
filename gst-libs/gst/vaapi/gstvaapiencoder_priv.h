@@ -37,10 +37,10 @@ G_BEGIN_DECLS
     ((GstVaapiEncoder *)(encoder))
 
 #define GST_VAAPI_ENCODER_CLASS(klass) \
-    ((GstVaapiEncoderClass *)(klass))
+    (G_TYPE_CHECK_CLASS_CAST ((klass), GST_TYPE_VAAPI_ENCODER, GstVaapiEncoderClass))
 
 #define GST_VAAPI_ENCODER_GET_CLASS(obj) \
-    GST_VAAPI_ENCODER_CLASS(GST_VAAPI_MINI_OBJECT_GET_CLASS(obj))
+    (G_TYPE_INSTANCE_GET_CLASS ((obj), GST_TYPE_VAAPI_ENCODER, GstVaapiEncoderClass))
 
 /**
  * GST_VAAPI_ENCODER_PACKED_HEADERS:
@@ -221,31 +221,10 @@ G_BEGIN_DECLS
 typedef struct _GstVaapiEncoderClass GstVaapiEncoderClass;
 typedef struct _GstVaapiEncoderClassData GstVaapiEncoderClassData;
 
-/* Private GstVaapiEncoderPropInfo definition */
-typedef struct {
-  gint prop;
-  GParamSpec *pspec;
-} GstVaapiEncoderPropData;
-
-#define GST_VAAPI_ENCODER_PROPERTIES_APPEND(props, id, pspec) do {      \
-    props = gst_vaapi_encoder_properties_append (props, id, pspec);     \
-    if (!props)                                                         \
-      return NULL;                                                      \
-  } while (0)
-
-G_GNUC_INTERNAL
-GPtrArray *
-gst_vaapi_encoder_properties_append (GPtrArray * props, gint prop_id,
-    GParamSpec *pspec);
-
-G_GNUC_INTERNAL
-GPtrArray *
-gst_vaapi_encoder_properties_get_default (const GstVaapiEncoderClass * klass);
-
 struct _GstVaapiEncoder
 {
   /*< private >*/
-  GstVaapiMiniObject parent_instance;
+  GstObject parent_instance;
 
   GPtrArray *properties;
   GstVaapiDisplay *display;
@@ -262,6 +241,7 @@ struct _GstVaapiEncoder
   GstVaapiRateControl rate_control;
   guint32 rate_control_mask;
   guint bitrate; /* kbps */
+  guint target_percentage;
   guint keyframe_period;
 
   /* Maximum number of reference frames supported
@@ -289,6 +269,9 @@ struct _GstVaapiEncoder
   VAEncMiscParameterHRD va_hrd;
 
   gint8 default_roi_value;
+
+  /* trellis quantization */
+  gboolean trellis;
 };
 
 struct _GstVaapiEncoderClassData
@@ -333,20 +316,11 @@ struct _GstVaapiEncoderClassData
 struct _GstVaapiEncoderClass
 {
   /*< private >*/
-  GstVaapiMiniObjectClass parent_class;
+  GstObjectClass parent_class;
 
   const GstVaapiEncoderClassData *class_data;
 
-  gboolean              (*init)         (GstVaapiEncoder * encoder);
-  void                  (*finalize)     (GstVaapiEncoder * encoder);
-
   GstVaapiEncoderStatus (*reconfigure)  (GstVaapiEncoder * encoder);
-
-  GPtrArray *           (*get_default_properties) (void);
-  GstVaapiEncoderStatus (*set_property) (GstVaapiEncoder * encoder,
-                                         gint prop_id,
-                                         const GValue * value);
-
   GstVaapiEncoderStatus (*reordering)   (GstVaapiEncoder * encoder,
                                          GstVideoCodecFrame * in,
                                          GstVaapiEncPicture ** out);
@@ -362,36 +336,13 @@ struct _GstVaapiEncoderClass
 
   /* To create a secondary context for a single base encoder */
   gboolean              (*ensure_secondary_context) (GstVaapiEncoder * encoder);
+
+  /* Iterator that retrieves the pending pictures in the reordered
+   * list */
+  gboolean              (*get_pending_reordered) (GstVaapiEncoder * encoder,
+                                                  GstVaapiEncPicture ** picture,
+                                                  gpointer * state);
 };
-
-#define GST_VAAPI_ENCODER_CLASS_HOOK(codec, func) \
-  .func = G_PASTE (G_PASTE (G_PASTE (gst_vaapi_encoder_,codec),_), func)
-
-#define GST_VAAPI_ENCODER_CLASS_INIT_BASE(CODEC)                \
-  .parent_class = {                                             \
-    .size = sizeof (G_PASTE (GstVaapiEncoder, CODEC)),          \
-    .finalize = (GDestroyNotify) gst_vaapi_encoder_finalize     \
-  }
-
-#define GST_VAAPI_ENCODER_CLASS_INIT(CODEC, codec)              \
-  GST_VAAPI_ENCODER_CLASS_INIT_BASE (CODEC),                    \
-    .class_data = &g_class_data,                                \
-    GST_VAAPI_ENCODER_CLASS_HOOK (codec, init),                 \
-    GST_VAAPI_ENCODER_CLASS_HOOK (codec, finalize),             \
-    GST_VAAPI_ENCODER_CLASS_HOOK (codec, reconfigure),          \
-    GST_VAAPI_ENCODER_CLASS_HOOK (codec, get_default_properties), \
-    GST_VAAPI_ENCODER_CLASS_HOOK (codec, reordering),           \
-    GST_VAAPI_ENCODER_CLASS_HOOK (codec, encode),               \
-    GST_VAAPI_ENCODER_CLASS_HOOK (codec, flush)
-
-G_GNUC_INTERNAL
-GstVaapiEncoder *
-gst_vaapi_encoder_new (const GstVaapiEncoderClass * klass,
-    GstVaapiDisplay * display);
-
-G_GNUC_INTERNAL
-void
-gst_vaapi_encoder_finalize (GstVaapiEncoder * encoder);
 
 G_GNUC_INTERNAL
 GstVaapiSurfaceProxy *
@@ -418,6 +369,11 @@ gst_vaapi_encoder_ensure_param_control_rate (GstVaapiEncoder * encoder,
 G_GNUC_INTERNAL
 gboolean
 gst_vaapi_encoder_ensure_param_roi_regions (GstVaapiEncoder * encoder,
+    GstVaapiEncPicture * picture);
+
+G_GNUC_INTERNAL
+gboolean
+gst_vaapi_encoder_ensure_param_trellis (GstVaapiEncoder * encoder,
     GstVaapiEncPicture * picture);
 
 G_GNUC_INTERNAL

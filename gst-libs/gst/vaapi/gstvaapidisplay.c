@@ -463,8 +463,12 @@ ensure_profiles (GstVaapiDisplay * display)
   VAStatus status;
   gboolean success = FALSE;
 
-  if (priv->has_profiles)
+  GST_VAAPI_DISPLAY_LOCK (display);
+
+  if (priv->has_profiles) {
+    GST_VAAPI_DISPLAY_UNLOCK (display);
     return TRUE;
+  }
 
   priv->decoders = g_array_new (FALSE, FALSE, sizeof (GstVaapiConfig));
   if (!priv->decoders)
@@ -532,7 +536,6 @@ ensure_profiles (GstVaapiDisplay * display)
   g_array_sort (priv->encoders, compare_profiles);
 
   /* Video processing API */
-#if USE_VA_VPP
   status = vaQueryConfigEntrypoints (priv->display, VAProfileNone,
       entrypoints, &num_entrypoints);
   if (vaapi_check_status (status, "vaQueryEntrypoints() [VAProfileNone]")) {
@@ -541,12 +544,12 @@ ensure_profiles (GstVaapiDisplay * display)
         priv->has_vpp = TRUE;
     }
   }
-#endif
   success = TRUE;
 
 cleanup:
   g_free (profiles);
   g_free (entrypoints);
+  GST_VAAPI_DISPLAY_UNLOCK (display);
   return success;
 }
 
@@ -671,6 +674,11 @@ ensure_image_formats (GstVaapiDisplay * display)
   GST_DEBUG ("%d image formats", n);
   for (i = 0; i < n; i++)
     GST_DEBUG ("  %" GST_FOURCC_FORMAT, GST_FOURCC_ARGS (formats[i].fourcc));
+
+  if (!gst_vaapi_video_format_create_map (formats, n)) {
+    GST_ERROR ("fail to create map between gst video format and vaImageFormat");
+    goto cleanup;
+  }
 
   append_formats (priv->image_formats, formats, NULL, n);
   g_array_sort (priv->image_formats, compare_yuv_formats);
@@ -903,6 +911,12 @@ gst_vaapi_display_create (GstVaapiDisplay * display,
   GST_INFO_OBJECT (display, "new display addr=%p", display);
   g_free (priv->display_name);
   priv->display_name = g_strdup (info.display_name);
+
+  if (!ensure_image_formats (display)) {
+    gst_vaapi_display_destroy (display);
+    return FALSE;
+  }
+
   return TRUE;
 }
 

@@ -30,16 +30,13 @@
 #include "sysdeps.h"
 #include "gstvaapicompat.h"
 #include "gstvaapicontext.h"
-#include "gstvaapicontext_overlay.h"
 #include "gstvaapidisplay_priv.h"
 #include "gstvaapiobject_priv.h"
 #include "gstvaapisurface.h"
-#include "gstvaapisurface_priv.h"
 #include "gstvaapisurfacepool.h"
 #include "gstvaapisurfaceproxy.h"
 #include "gstvaapivideopool_priv.h"
 #include "gstvaapiutils.h"
-#include "gstvaapiutils_core.h"
 
 #define DEBUG 1
 #include "gstvaapidebug.h"
@@ -51,22 +48,15 @@
 #define SCRATCH_SURFACES_COUNT (4)
 
 static gboolean
-ensure_formats (GstVaapiContext * context)
+ensure_attributes (GstVaapiContext * context)
 {
-  if (G_LIKELY (context->formats))
+  if (G_LIKELY (context->attribs))
     return TRUE;
 
-  context->formats =
-      gst_vaapi_get_surface_formats (GST_VAAPI_OBJECT_DISPLAY (context),
-      context->va_config);
-  return (context->formats != NULL);
-}
-
-static void
-unref_surface_cb (GstVaapiSurface * surface)
-{
-  gst_vaapi_surface_set_parent_context (surface, NULL);
-  gst_vaapi_object_unref (surface);
+  context->attribs =
+      gst_vaapi_config_surface_attributes_get (GST_VAAPI_OBJECT_DISPLAY
+      (context), context->va_config);
+  return (context->attribs != NULL);
 }
 
 static inline gboolean
@@ -80,8 +70,6 @@ context_get_attribute (GstVaapiContext * context, VAConfigAttribType type,
 static void
 context_destroy_surfaces (GstVaapiContext * context)
 {
-  gst_vaapi_context_overlay_reset (context);
-
   if (context->surfaces) {
     g_ptr_array_unref (context->surfaces);
     context->surfaces = NULL;
@@ -119,9 +107,9 @@ context_destroy (GstVaapiContext * context)
     context->va_config = VA_INVALID_ID;
   }
 
-  if (context->formats) {
-    g_array_unref (context->formats);
-    context->formats = NULL;
+  if (context->attribs) {
+    gst_vaapi_config_surface_attributes_free (context->attribs);
+    context->attribs = NULL;
   }
 }
 
@@ -133,16 +121,15 @@ context_ensure_surfaces (GstVaapiContext * context)
   GstVaapiSurface *surface;
   guint i;
 
-  if (!ensure_formats (context))
+  if (!ensure_attributes (context))
     return FALSE;
 
   for (i = context->surfaces->len; i < num_surfaces; i++) {
     surface =
         gst_vaapi_surface_new_from_formats (GST_VAAPI_OBJECT_DISPLAY (context),
-        cip->chroma_type, cip->width, cip->height, context->formats);
+        cip->chroma_type, cip->width, cip->height, context->attribs->formats);
     if (!surface)
       return FALSE;
-    gst_vaapi_surface_set_parent_context (surface, context);
     g_ptr_array_add (context->surfaces, surface);
     if (!gst_vaapi_video_pool_add_object (context->surfaces_pool, surface))
       return FALSE;
@@ -158,13 +145,10 @@ context_create_surfaces (GstVaapiContext * context)
   GstVaapiDisplay *const display = GST_VAAPI_OBJECT_DISPLAY (context);
   guint num_surfaces;
 
-  if (!gst_vaapi_context_overlay_reset (context))
-    return FALSE;
-
   num_surfaces = cip->ref_frames + SCRATCH_SURFACES_COUNT;
   if (!context->surfaces) {
     context->surfaces = g_ptr_array_new_full (num_surfaces,
-        (GDestroyNotify) unref_surface_cb);
+        (GDestroyNotify) gst_vaapi_object_unref);
     if (!context->surfaces)
       return FALSE;
   }
@@ -302,7 +286,6 @@ config_create (GstVaapiContext * context)
         attrib = &attribs[++attrib_index];
         g_assert (attrib_index < G_N_ELEMENTS (attribs));
       }
-#if VA_CHECK_VERSION(0,37,0)
       if (cip->profile == GST_VAAPI_PROFILE_JPEG_BASELINE) {
         attrib->type = VAConfigAttribEncJPEG;
         if (!context_get_attribute (context, attrib->type, &value))
@@ -311,7 +294,6 @@ config_create (GstVaapiContext * context)
         attrib = &attribs[++attrib_index];
         g_assert (attrib_index < G_N_ELEMENTS (attribs));
       }
-#endif
 #if VA_CHECK_VERSION(0,39,1)
       if (config->roi_capability) {
         VAConfigAttribValEncROI *roi_config;
@@ -407,9 +389,8 @@ gst_vaapi_context_init (GstVaapiContext * context,
 
   context->va_config = VA_INVALID_ID;
   context->reset_on_resize = TRUE;
-  gst_vaapi_context_overlay_init (context);
 
-  context->formats = NULL;
+  context->attribs = NULL;
 }
 
 static void
@@ -417,7 +398,6 @@ gst_vaapi_context_finalize (GstVaapiContext * context)
 {
   context_destroy (context);
   context_destroy_surfaces (context);
-  gst_vaapi_context_overlay_finalize (context);
 }
 
 GST_VAAPI_OBJECT_DEFINE_CLASS (GstVaapiContext, gst_vaapi_context);
@@ -635,7 +615,43 @@ gst_vaapi_context_get_surface_formats (GstVaapiContext * context)
 {
   g_return_val_if_fail (context, NULL);
 
-  if (!ensure_formats (context))
+  if (!ensure_attributes (context))
     return NULL;
-  return g_array_ref (context->formats);
+
+  if (context->attribs->formats)
+    return g_array_ref (context->attribs->formats);
+  return NULL;
+}
+
+/**
+ * gst_vaapi_context_get_surface_attributes:
+ * @context: a #GstVaapiContext
+ * @out_attribs: an allocated #GstVaapiConfigSurfaceAttributes
+ *
+ * Copy context's surface restrictions to @out_attribs, EXCEPT the
+ * color formats. Use gst_vaapi_context_get_surface_formats() to get
+ * them.
+ *
+ * Returns: %TRUE if the attributes were extracted and copied; %FALSE,
+ * otherwise
+ **/
+gboolean
+gst_vaapi_context_get_surface_attributes (GstVaapiContext * context,
+    GstVaapiConfigSurfaceAttributes * out_attribs)
+{
+  g_return_val_if_fail (context, FALSE);
+
+  if (!ensure_attributes (context))
+    return FALSE;
+
+  if (out_attribs) {
+    out_attribs->min_width = context->attribs->min_width;
+    out_attribs->min_height = context->attribs->min_height;
+    out_attribs->max_width = context->attribs->max_width;
+    out_attribs->max_height = context->attribs->max_height;
+    out_attribs->mem_types = context->attribs->mem_types;
+    out_attribs->formats = NULL;
+  }
+
+  return TRUE;
 }

@@ -57,11 +57,10 @@ typedef gsize GstVaapiID;
  *
  * Can be used together with #GST_VAAPI_ID_ARGS to properly output an
  * integer value in a printf()-style text message.
- * <informalexample>
- * <programlisting>
+ *
+ * ``` C
  * printf("id: %" GST_VAAPI_ID_FORMAT "\n", GST_VAAPI_ID_ARGS(id));
- * </programlisting>
- * </informalexample>
+ * ```
  */
 #define GST_VAAPI_ID_FORMAT "p"
 
@@ -149,6 +148,10 @@ typedef enum {
  * @GST_VAAPI_RATECONTROL_VBR_CONSTRAINED: Variable bitrate with peak
  *   rate higher than average bitrate
  * @GST_VAAPI_RATECONTROL_MB: Macroblock based rate control
+ * @GST_VAAPI_RATECONTROL_ICQ: Intelligent Constant QP, use
+ * quality_factor to improve subjective quality base on motion
+ * @GST_VAAPI_RATECONTROL_QVBR: Quality defined VBR, use
+ * quality_factor to get good enough quality and save bits
  *
  * The set of allowed rate control values for #GstVaapiRateControl.
  * Note: this is only valid for encoders.
@@ -161,11 +164,13 @@ typedef enum {
     GST_VAAPI_RATECONTROL_VBR,
     GST_VAAPI_RATECONTROL_VBR_CONSTRAINED,
     GST_VAAPI_RATECONTROL_MB,
+    GST_VAAPI_RATECONTROL_ICQ,
+    GST_VAAPI_RATECONTROL_QVBR,
 } GstVaapiRateControl;
 
 /* Define a mask for GstVaapiRateControl */
 #define GST_VAAPI_RATECONTROL_MASK(RC) \
-    (1 << G_PASTE(GST_VAAPI_RATECONTROL_,RC))
+    (1U << G_PASTE(GST_VAAPI_RATECONTROL_,RC))
 
 G_END_DECLS
 

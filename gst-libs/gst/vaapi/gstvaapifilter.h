@@ -48,7 +48,10 @@ typedef struct _GstVaapiFilterOpInfo            GstVaapiFilterOpInfo;
  * @GST_VAAPI_FILTER_OP_BRIGHTNESS: Change brightness (float).
  * @GST_VAAPI_FILTER_OP_CONTRAST: Change contrast (float).
  * @GST_VAAPI_FILTER_OP_SCALING: Change scaling method (#GstVaapiScaleMethod).
+ * @GST_VAAPI_FILTER_OP_VIDEO_DIRECTION: Change video direction
+ *   (#GstVideoOrientationMethod).
  * @GST_VAAPI_FILTER_OP_SKINTONE: Skin tone enhancement (bool).
+ * @GST_VAAPI_FILTER_OP_SKINTONE_LEVEL: Skin tone enhancement (uint).
  *
  * The set of operations that could be applied to the filter.
  */
@@ -63,7 +66,11 @@ typedef enum {
   GST_VAAPI_FILTER_OP_CONTRAST,
   GST_VAAPI_FILTER_OP_DEINTERLACING,
   GST_VAAPI_FILTER_OP_SCALING,
+  GST_VAAPI_FILTER_OP_VIDEO_DIRECTION,
+#ifndef GST_REMOVE_DEPRECATED
   GST_VAAPI_FILTER_OP_SKINTONE,
+#endif
+  GST_VAAPI_FILTER_OP_SKINTONE_LEVEL,
 } GstVaapiFilterOp;
 
 /**
@@ -208,6 +215,9 @@ gboolean
 gst_vaapi_filter_set_format (GstVaapiFilter * filter, GstVideoFormat format);
 
 gboolean
+gst_vaapi_filter_append_caps (GstVaapiFilter * filter, GstStructure * structure);
+
+gboolean
 gst_vaapi_filter_set_cropping_rectangle (GstVaapiFilter * filter,
     const GstVaapiRectangle * rect);
 
@@ -247,8 +257,20 @@ gst_vaapi_filter_set_scaling (GstVaapiFilter * filter,
     GstVaapiScaleMethod method);
 
 gboolean
+gst_vaapi_filter_set_video_direction (GstVaapiFilter * filter,
+    GstVideoOrientationMethod method);
+
+GstVideoOrientationMethod
+gst_vaapi_filter_get_video_direction (GstVaapiFilter * filter);
+
+#ifndef GST_REMOVE_DEPRECATED
+gboolean
 gst_vaapi_filter_set_skintone (GstVaapiFilter * filter,
     gboolean enhance);
+#endif
+
+gboolean
+gst_vaapi_filter_set_skintone_level (GstVaapiFilter * filter, guint value);
 
 gfloat
 gst_vaapi_filter_get_denoising_level_default (GstVaapiFilter * filter);
@@ -271,8 +293,16 @@ gst_vaapi_filter_get_contrast_default (GstVaapiFilter * filter);
 GstVaapiScaleMethod
 gst_vaapi_filter_get_scaling_default (GstVaapiFilter * filter);
 
+GstVideoOrientationMethod
+gst_vaapi_filter_get_video_direction_default (GstVaapiFilter * filter);
+
+#ifndef GST_REMOVE_DEPRECATED
 gboolean
 gst_vaapi_filter_get_skintone_default (GstVaapiFilter * filter);
+#endif
+
+guint
+gst_vaapi_filter_get_skintone_level_default (GstVaapiFilter * filter);
 
 #ifdef G_DEFINE_AUTOPTR_CLEANUP_FUNC
 G_DEFINE_AUTOPTR_CLEANUP_FUNC(GstVaapiFilter, gst_object_unref)

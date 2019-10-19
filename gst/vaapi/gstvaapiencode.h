@@ -73,12 +73,7 @@ struct _GstVaapiEncodeClass
   /*< private >*/
   GstVaapiPluginBaseClass parent_class;
 
-  GPtrArray *         (*get_properties) (void);
-  gboolean            (*get_property)   (GstVaapiEncode * encode,
-                                         guint prop_id, GValue * value);
-  gboolean            (*set_property)   (GstVaapiEncode * encode,
-                                         guint prop_id, const GValue * value);
-
+  guint               prop_num;
   gboolean            (*set_config)     (GstVaapiEncode * encode);
   GstCaps *           (*get_caps)       (GstVaapiEncode * encode);
   GstVaapiEncoder *   (*alloc_encoder)  (GstVaapiEncode * encode,
@@ -98,19 +93,25 @@ struct _GstVaapiEncodeClass
                                                 GstVaapiCodedBufferProxy *proxy);
 
 #endif
-
 };
 
 GType
 gst_vaapiencode_get_type (void) G_GNUC_CONST;
 
 G_GNUC_INTERNAL
-gboolean
-gst_vaapiencode_init_properties (GstVaapiEncode * encode);
+void
+gst_vaapiencode_set_property_subclass (GObject * object,
+    guint prop_id, const GValue * value, GParamSpec * pspec);
+
+G_GNUC_INTERNAL
+void
+gst_vaapiencode_get_property_subclass (GObject * object, guint prop_id,
+    GValue * value, GParamSpec * pspec);
 
 G_GNUC_INTERNAL
 gboolean
-gst_vaapiencode_class_init_properties (GstVaapiEncodeClass * encode_class);
+gst_vaapiencode_class_install_properties (GstVaapiEncodeClass * klass,
+    GObjectClass * encoder_class);
 
 G_END_DECLS
 

@@ -27,16 +27,17 @@
  * vaapipostproc consists in various postprocessing algorithms to be
  * applied to VA surfaces.
  *
- * <refsect2>
- * <title>Example launch line</title>
+ * ## Example launch line
+ *
  * |[
  * gst-launch-1.0 videotestsrc ! vaapipostproc ! video/x-raw width=1920, height=1080 ! vaapisink
  * ]|
- * </refsect2>
  */
 
 #include "gstcompat.h"
 #include <gst/video/video.h>
+
+#include <gst/vaapi/gstvaapivalue.h>
 
 #include "gstvaapipostproc.h"
 #include "gstvaapipostprocutil.h"
@@ -121,7 +122,15 @@ enum
   PROP_BRIGHTNESS,
   PROP_CONTRAST,
   PROP_SCALE_METHOD,
+  PROP_VIDEO_DIRECTION,
+  PROP_CROP_LEFT,
+  PROP_CROP_RIGHT,
+  PROP_CROP_TOP,
+  PROP_CROP_BOTTOM,
+#ifndef GST_REMOVE_DEPRECATED
   PROP_SKIN_TONE_ENHANCEMENT,
+#endif
+  PROP_SKIN_TONE_ENHANCEMENT_LEVEL,
 };
 
 #define GST_VAAPI_TYPE_DEINTERLACE_MODE \
@@ -244,13 +253,17 @@ gst_vaapipostproc_ensure_filter_caps (GstVaapiPostproc * postproc)
   if (!gst_vaapipostproc_ensure_filter (postproc))
     return FALSE;
 
-  postproc->filter_ops = gst_vaapi_filter_get_operations (postproc->filter);
-  if (!postproc->filter_ops)
-    return FALSE;
+  if (!postproc->filter_ops) {
+    postproc->filter_ops = gst_vaapi_filter_get_operations (postproc->filter);
+    if (!postproc->filter_ops)
+      return FALSE;
+  }
 
-  postproc->filter_formats = gst_vaapi_filter_get_formats (postproc->filter);
-  if (!postproc->filter_formats)
-    return FALSE;
+  if (!postproc->filter_formats) {
+    postproc->filter_formats = gst_vaapi_filter_get_formats (postproc->filter);
+    if (!postproc->filter_formats)
+      return FALSE;
+  }
   return TRUE;
 }
 
@@ -318,6 +331,7 @@ gst_vaapipostproc_stop (GstBaseTransform * trans)
 {
   GstVaapiPostproc *const postproc = GST_VAAPIPOSTPROC (trans);
 
+  g_mutex_lock (&postproc->postproc_lock);
   ds_reset (&postproc->deinterlace_state);
   gst_vaapi_plugin_base_close (GST_VAAPI_PLUGIN_BASE (postproc));
 
@@ -325,6 +339,7 @@ gst_vaapipostproc_stop (GstBaseTransform * trans)
   gst_video_info_init (&postproc->sinkpad_info);
   gst_video_info_init (&postproc->srcpad_info);
   gst_video_info_init (&postproc->filter_pool_info);
+  g_mutex_unlock (&postproc->postproc_lock);
 
   return TRUE;
 }
@@ -507,7 +522,8 @@ check_filter_update (GstVaapiPostproc * postproc)
   if (!postproc->has_vpp)
     return FALSE;
 
-  for (i = GST_VAAPI_FILTER_OP_DENOISE; i <= GST_VAAPI_FILTER_OP_SKINTONE; i++) {
+  for (i = GST_VAAPI_FILTER_OP_DENOISE;
+      i <= GST_VAAPI_FILTER_OP_SKINTONE_LEVEL; i++) {
     op_flag = (filter_flag >> i) & 1;
     if (op_flag)
       return TRUE;
@@ -591,14 +607,58 @@ update_filter (GstVaapiPostproc * postproc)
       postproc->flags &= ~(GST_VAAPI_POSTPROC_FLAG_SCALE);
   }
 
-  if (postproc->flags & GST_VAAPI_POSTPROC_FLAG_SKINTONE) {
-    if (!gst_vaapi_filter_set_skintone (postproc->filter,
-            postproc->skintone_enhance))
+  if (postproc->flags & GST_VAAPI_POSTPROC_FLAG_VIDEO_DIRECTION) {
+    GstVideoOrientationMethod method = postproc->video_direction;
+    if (method == GST_VIDEO_ORIENTATION_AUTO)
+      method = postproc->tag_video_direction;
+
+    if (!gst_vaapi_filter_set_video_direction (postproc->filter, method)) {
+      GST_ELEMENT_WARNING (postproc, LIBRARY, SETTINGS,
+          ("Unsupported video direction '%s' by driver.",
+              gst_vaapi_enum_type_get_nick
+              (GST_TYPE_VIDEO_ORIENTATION_METHOD, method)),
+          ("video direction transformation ignored"));
+
+      /* Don't return FALSE because other filters might be set */
+    }
+
+    if (gst_vaapi_filter_get_video_direction_default (postproc->filter) ==
+        method)
+      postproc->flags &= ~(GST_VAAPI_POSTPROC_FLAG_VIDEO_DIRECTION);
+  }
+
+  if (postproc->flags & GST_VAAPI_POSTPROC_FLAG_CROP)
+    if ((postproc->crop_left | postproc->crop_right | postproc->crop_top
+            | postproc->crop_bottom) == 0)
+      postproc->flags &= ~(GST_VAAPI_POSTPROC_FLAG_CROP);
+
+  if (postproc->flags & GST_VAAPI_POSTPROC_FLAG_SKINTONE_LEVEL) {
+    if (!gst_vaapi_filter_set_skintone_level (postproc->filter,
+            postproc->skintone_value))
       return FALSE;
 
-    if (gst_vaapi_filter_get_skintone_default (postproc->filter) ==
-        postproc->skintone_enhance)
-      postproc->flags &= ~(GST_VAAPI_POSTPROC_FLAG_SKINTONE);
+    if (gst_vaapi_filter_get_skintone_level_default (postproc->filter) ==
+        postproc->skintone_value)
+      postproc->flags &= ~(GST_VAAPI_POSTPROC_FLAG_SKINTONE_LEVEL);
+
+#ifndef GST_REMOVE_DEPRECATED
+    /*
+     * When use skin tone level property, disable old skin tone property always
+     */
+    postproc->flags &= ~(GST_VAAPI_POSTPROC_FLAG_SKINTONE);
+#endif
+  } else {
+#ifndef GST_REMOVE_DEPRECATED
+    if (postproc->flags & GST_VAAPI_POSTPROC_FLAG_SKINTONE) {
+      if (!gst_vaapi_filter_set_skintone (postproc->filter,
+              postproc->skintone_enhance))
+        return FALSE;
+
+      if (gst_vaapi_filter_get_skintone_default (postproc->filter) ==
+          postproc->skintone_enhance)
+        postproc->flags &= ~(GST_VAAPI_POSTPROC_FLAG_SKINTONE);
+    }
+#endif
   }
 
   return TRUE;
@@ -644,6 +704,63 @@ replace_to_dumb_buffer_if_required (GstVaapiPostproc * postproc,
   return TRUE;
 }
 
+static gboolean
+use_vpp_crop (GstVaapiPostproc * postproc)
+{
+  return !(postproc->forward_crop
+      && !(postproc->flags & GST_VAAPI_POSTPROC_FLAG_CROP));
+}
+
+static void
+rotate_crop_meta (GstVaapiPostproc * const postproc, const GstVideoMeta * vmeta,
+    GstVideoCropMeta * crop)
+{
+  guint tmp;
+
+  /* The video meta is required since the caps width/height are smaller,
+   * which would not result in a usable GstVideoInfo for mapping the
+   * buffer. */
+  if (!vmeta || !crop)
+    return;
+
+  switch (gst_vaapi_filter_get_video_direction (postproc->filter)) {
+    case GST_VIDEO_ORIENTATION_HORIZ:
+      crop->x = vmeta->width - crop->width - crop->x;
+      break;
+    case GST_VIDEO_ORIENTATION_VERT:
+      crop->y = vmeta->height - crop->height - crop->y;
+      break;
+    case GST_VIDEO_ORIENTATION_90R:
+      tmp = crop->x;
+      crop->x = vmeta->height - crop->height - crop->y;
+      crop->y = tmp;
+      G_PRIMITIVE_SWAP (guint, crop->width, crop->height);
+      break;
+    case GST_VIDEO_ORIENTATION_180:
+      crop->x = vmeta->width - crop->width - crop->x;
+      crop->y = vmeta->height - crop->height - crop->y;
+      break;
+    case GST_VIDEO_ORIENTATION_90L:
+      tmp = crop->x;
+      crop->x = crop->y;
+      crop->y = vmeta->width - crop->width - tmp;
+      G_PRIMITIVE_SWAP (guint, crop->width, crop->height);
+      break;
+    case GST_VIDEO_ORIENTATION_UR_LL:
+      tmp = crop->x;
+      crop->x = vmeta->height - crop->height - crop->y;
+      crop->y = vmeta->width - crop->width - tmp;
+      G_PRIMITIVE_SWAP (guint, crop->width, crop->height);
+      break;
+    case GST_VIDEO_ORIENTATION_UL_LR:
+      G_PRIMITIVE_SWAP (guint, crop->x, crop->y);
+      G_PRIMITIVE_SWAP (guint, crop->width, crop->height);
+      break;
+    default:
+      break;
+  }
+}
+
 static GstFlowReturn
 gst_vaapipostproc_process_vpp (GstBaseTransform * trans, GstBuffer * inbuf,
     GstBuffer * outbuf)
@@ -669,14 +786,22 @@ gst_vaapipostproc_process_vpp (GstBaseTransform * trans, GstBuffer * inbuf,
     goto error_invalid_buffer;
   inbuf_surface = gst_vaapi_video_meta_get_surface (inbuf_meta);
 
-  crop_meta = gst_buffer_get_video_crop_meta (inbuf);
-  if (crop_meta) {
+  if (use_vpp_crop (postproc)) {
     crop_rect = &tmp_rect;
-    crop_rect->x = crop_meta->x;
-    crop_rect->y = crop_meta->y;
-    crop_rect->width = crop_meta->width;
-    crop_rect->height = crop_meta->height;
+    crop_rect->x = postproc->crop_left;
+    crop_rect->y = postproc->crop_top;
+    crop_rect->width = GST_VIDEO_INFO_WIDTH (&postproc->sinkpad_info)
+        - (postproc->crop_left + postproc->crop_right);
+    crop_rect->height = GST_VIDEO_INFO_HEIGHT (&postproc->sinkpad_info)
+        - (postproc->crop_top + postproc->crop_bottom);
+
+    crop_meta = gst_buffer_get_video_crop_meta (inbuf);
+    if (crop_meta) {
+      crop_rect->x += crop_meta->x;
+      crop_rect->y += crop_meta->y;
+    }
   }
+
   if (!crop_rect)
     crop_rect = (GstVaapiRectangle *)
         gst_vaapi_video_meta_get_render_rect (inbuf_meta);
@@ -721,13 +846,15 @@ gst_vaapipostproc_process_vpp (GstBaseTransform * trans, GstBuffer * inbuf,
     if (!outbuf_meta)
       goto error_create_meta;
 
-    proxy =
-        gst_vaapi_surface_proxy_new_from_pool (GST_VAAPI_SURFACE_POOL
-        (postproc->filter_pool));
-    if (!proxy)
-      goto error_create_proxy;
-    gst_vaapi_video_meta_set_surface_proxy (outbuf_meta, proxy);
-    gst_vaapi_surface_proxy_unref (proxy);
+    if (!gst_vaapi_video_meta_get_surface_proxy (outbuf_meta)) {
+      proxy =
+          gst_vaapi_surface_proxy_new_from_pool (GST_VAAPI_SURFACE_POOL
+          (postproc->filter_pool));
+      if (!proxy)
+        goto error_create_proxy;
+      gst_vaapi_video_meta_set_surface_proxy (outbuf_meta, proxy);
+      gst_vaapi_surface_proxy_unref (proxy);
+    }
 
     if (deint) {
       deint_flags = (tff ? GST_VAAPI_DEINTERLACE_FLAG_TOPFIELD : 0);
@@ -830,7 +957,11 @@ gst_vaapipostproc_process_vpp (GstBaseTransform * trans, GstBuffer * inbuf,
       discont = FALSE;
     }
   }
+
   copy_metadata (postproc, outbuf, inbuf);
+
+  rotate_crop_meta (postproc, gst_buffer_get_video_meta (inbuf),
+      gst_buffer_get_video_crop_meta (outbuf));
 
   if (deint && deint_refs)
     ds_add_buffer (ds, inbuf);
@@ -1066,7 +1197,7 @@ gst_vaapipostproc_update_src_caps (GstVaapiPostproc * postproc, GstCaps * caps,
 
   if (GST_VIDEO_INFO_WIDTH (&postproc->srcpad_info) !=
       GST_VIDEO_INFO_WIDTH (&postproc->sinkpad_info)
-      && GST_VIDEO_INFO_HEIGHT (&postproc->srcpad_info) !=
+      || GST_VIDEO_INFO_HEIGHT (&postproc->srcpad_info) !=
       GST_VIDEO_INFO_HEIGHT (&postproc->sinkpad_info))
     postproc->flags |= GST_VAAPI_POSTPROC_FLAG_SIZE;
 
@@ -1077,6 +1208,7 @@ static gboolean
 ensure_allowed_sinkpad_caps (GstVaapiPostproc * postproc)
 {
   GstCaps *out_caps, *raw_caps;
+  guint i, num_structures;
 
   if (postproc->allowed_sinkpad_caps)
     return TRUE;
@@ -1092,7 +1224,7 @@ ensure_allowed_sinkpad_caps (GstVaapiPostproc * postproc)
     return FALSE;
   }
 
-  raw_caps = gst_vaapi_plugin_base_get_allowed_raw_caps
+  raw_caps = gst_vaapi_plugin_base_get_allowed_sinkpad_raw_caps
       (GST_VAAPI_PLUGIN_BASE (postproc));
   if (!raw_caps) {
     gst_caps_unref (out_caps);
@@ -1102,6 +1234,19 @@ ensure_allowed_sinkpad_caps (GstVaapiPostproc * postproc)
 
   out_caps = gst_caps_make_writable (out_caps);
   gst_caps_append (out_caps, gst_caps_copy (raw_caps));
+
+  num_structures = gst_caps_get_size (out_caps);
+  for (i = 0; i < num_structures; i++) {
+    GstStructure *structure;
+
+    structure = gst_caps_get_structure (out_caps, i);
+    if (!structure)
+      continue;
+
+    if (postproc->filter)
+      gst_vaapi_filter_append_caps (postproc->filter, structure);
+  }
+
   postproc->allowed_sinkpad_caps = out_caps;
 
   /* XXX: append VA/VPP filters */
@@ -1134,15 +1279,18 @@ expand_allowed_srcpad_caps (GstVaapiPostproc * postproc, GstCaps * caps)
     GstCapsFeatures *const features = gst_caps_get_features (caps, i);
     GstStructure *structure;
 
+    structure = gst_caps_get_structure (caps, i);
+    if (!structure)
+      continue;
+
+    gst_vaapi_filter_append_caps (postproc->filter, structure);
+
     if (gst_caps_features_contains (features,
             GST_CAPS_FEATURE_META_GST_VIDEO_GL_TEXTURE_UPLOAD_META)) {
       gl_upload_meta_idx = i;
       continue;
     }
 
-    structure = gst_caps_get_structure (caps, i);
-    if (!structure)
-      continue;
     gst_structure_set_value (structure, "format", &value);
   }
   g_value_unset (&value);
@@ -1232,6 +1380,7 @@ gst_vaapipostproc_fixate_caps (GstBaseTransform * trans,
 {
   GstVaapiPostproc *const postproc = GST_VAAPIPOSTPROC (trans);
   GstCaps *outcaps = NULL;
+  gboolean same_caps, filter_updated = FALSE;
 
   GST_DEBUG_OBJECT (trans, "trying to fixate othercaps %" GST_PTR_FORMAT
       " based on caps %" GST_PTR_FORMAT " in direction %s", othercaps, caps,
@@ -1244,11 +1393,18 @@ gst_vaapipostproc_fixate_caps (GstBaseTransform * trans,
   }
 
   g_mutex_lock (&postproc->postproc_lock);
+  postproc->has_vpp = gst_vaapipostproc_ensure_filter_caps (postproc);
+  if (check_filter_update (postproc) && update_filter (postproc)) {
+    /* check again if changed value is default */
+    filter_updated = check_filter_update (postproc);
+  }
+
   outcaps = gst_vaapipostproc_fixate_srccaps (postproc, caps, othercaps);
   g_mutex_unlock (&postproc->postproc_lock);
 
   /* set passthrough according to caps changes or filter changes */
-  gst_vaapipostproc_set_passthrough (trans);
+  same_caps = gst_caps_is_equal (caps, outcaps);
+  gst_base_transform_set_passthrough (trans, same_caps && !filter_updated);
 
 done:
   GST_DEBUG_OBJECT (trans, "fixated othercaps to %" GST_PTR_FORMAT, outcaps);
@@ -1277,8 +1433,9 @@ gst_vaapipostproc_transform_meta (GstBaseTransform * trans, GstBuffer * outbuf,
 {
   GstVaapiPostproc *const postproc = GST_VAAPIPOSTPROC (trans);
 
-  /* dont' GstVideoCropMeta if use_vpp */
-  if (meta->info->api == GST_VIDEO_CROP_META_API_TYPE && postproc->use_vpp)
+  /* don't copy GstVideoCropMeta if we are using vpp crop */
+  if (meta->info->api == GST_VIDEO_CROP_META_API_TYPE
+      && use_vpp_crop (postproc))
     return FALSE;
 
   /* don't copy GstParentBufferMeta if use_vpp */
@@ -1346,15 +1503,73 @@ done:
   return ret;
 }
 
+static gboolean
+ensure_buffer_pool (GstVaapiPostproc * postproc, GstVideoInfo * vi)
+{
+  GstVaapiVideoPool *pool;
+
+  if (!vi)
+    return FALSE;
+
+  gst_video_info_change_format (vi, postproc->format,
+      GST_VIDEO_INFO_WIDTH (vi), GST_VIDEO_INFO_HEIGHT (vi));
+
+  if (postproc->filter_pool
+      && !video_info_changed (&postproc->filter_pool_info, vi))
+    return TRUE;
+  postproc->filter_pool_info = *vi;
+
+  pool =
+      gst_vaapi_surface_pool_new_full (GST_VAAPI_PLUGIN_BASE_DISPLAY (postproc),
+      &postproc->filter_pool_info, 0);
+  if (!pool)
+    return FALSE;
+
+  gst_vaapi_video_pool_replace (&postproc->filter_pool, pool);
+  gst_vaapi_video_pool_unref (pool);
+  return TRUE;
+}
+
 static GstFlowReturn
 gst_vaapipostproc_prepare_output_buffer (GstBaseTransform * trans,
     GstBuffer * inbuf, GstBuffer ** outbuf_ptr)
 {
   GstVaapiPostproc *const postproc = GST_VAAPIPOSTPROC (trans);
+  const GstVideoMeta *video_meta;
+  GstVideoInfo info;
 
   if (gst_base_transform_is_passthrough (trans)) {
     *outbuf_ptr = inbuf;
     return GST_FLOW_OK;
+  }
+
+  /* If we are not using vpp crop (i.e. forwarding crop meta to downstream)
+   * then, ensure our output buffer pool is sized and rotated for uncropped
+   * output */
+  if (gst_buffer_get_video_crop_meta (inbuf) && !use_vpp_crop (postproc)) {
+    /* The video meta is required since the caps width/height are smaller,
+     * which would not result in a usable GstVideoInfo for mapping the
+     * buffer. */
+    video_meta = gst_buffer_get_video_meta (inbuf);
+    if (!video_meta)
+      return GST_FLOW_ERROR;
+
+    info = postproc->srcpad_info;
+    info.width = video_meta->width;
+    info.height = video_meta->height;
+
+    /* compensate for rotation if needed */
+    switch (gst_vaapi_filter_get_video_direction (postproc->filter)) {
+      case GST_VIDEO_ORIENTATION_90R:
+      case GST_VIDEO_ORIENTATION_UL_LR:
+      case GST_VIDEO_ORIENTATION_90L:
+      case GST_VIDEO_ORIENTATION_UR_LL:
+        G_PRIMITIVE_SWAP (guint, info.width, info.height);
+      default:
+        break;
+    }
+
+    ensure_buffer_pool (postproc, &info);
   }
 
   if (GST_VAAPI_PLUGIN_BASE_COPY_OUTPUT_FRAME (trans)) {
@@ -1373,27 +1588,11 @@ static gboolean
 ensure_srcpad_buffer_pool (GstVaapiPostproc * postproc, GstCaps * caps)
 {
   GstVideoInfo vi;
-  GstVaapiVideoPool *pool;
 
   if (!gst_video_info_from_caps (&vi, caps))
     return FALSE;
-  gst_video_info_change_format (&vi, postproc->format,
-      GST_VIDEO_INFO_WIDTH (&vi), GST_VIDEO_INFO_HEIGHT (&vi));
 
-  if (postproc->filter_pool
-      && !video_info_changed (&postproc->filter_pool_info, &vi))
-    return TRUE;
-  postproc->filter_pool_info = vi;
-
-  pool =
-      gst_vaapi_surface_pool_new_full (GST_VAAPI_PLUGIN_BASE_DISPLAY (postproc),
-      &postproc->filter_pool_info, 0);
-  if (!pool)
-    return FALSE;
-
-  gst_vaapi_video_pool_replace (&postproc->filter_pool, pool);
-  gst_vaapi_video_pool_unref (pool);
-  return TRUE;
+  return ensure_buffer_pool (postproc, &vi);
 }
 
 static gboolean
@@ -1497,6 +1696,10 @@ gst_vaapipostproc_propose_allocation (GstBaseTransform * trans,
   gint allocation_width, allocation_height;
   gint negotiated_width, negotiated_height;
 
+  /* advertise to upstream that we can handle crop meta */
+  if (decide_query)
+    gst_query_add_allocation_meta (query, GST_VIDEO_CROP_META_API_TYPE, NULL);
+
   negotiated_width = GST_VIDEO_INFO_WIDTH (&postproc->sinkpad_info);
   negotiated_height = GST_VIDEO_INFO_HEIGHT (&postproc->sinkpad_info);
 
@@ -1515,8 +1718,11 @@ gst_vaapipostproc_propose_allocation (GstBaseTransform * trans,
     goto bail;
 
   if (allocation_width != negotiated_width
-      || allocation_height != negotiated_height)
+      || allocation_height != negotiated_height) {
+    g_mutex_lock (&postproc->postproc_lock);
     postproc->flags |= GST_VAAPI_POSTPROC_FLAG_SIZE;
+    g_mutex_unlock (&postproc->postproc_lock);
+  }
 
 bail:
   /* Let vaapidecode allocate the video buffers */
@@ -1530,8 +1736,181 @@ bail:
 static gboolean
 gst_vaapipostproc_decide_allocation (GstBaseTransform * trans, GstQuery * query)
 {
+  GstVaapiPostproc *const postproc = GST_VAAPIPOSTPROC (trans);
+
+  g_mutex_lock (&postproc->postproc_lock);
+  /* Let downstream handle the crop meta if they support it */
+  postproc->forward_crop = (gst_query_find_allocation_meta (query,
+          GST_VIDEO_CROP_META_API_TYPE, NULL) &&
+      gst_query_find_allocation_meta (query, GST_VIDEO_META_API_TYPE, NULL));
+  GST_DEBUG_OBJECT (postproc, "use_vpp_crop=%d", use_vpp_crop (postproc));
+  g_mutex_unlock (&postproc->postproc_lock);
+
   return gst_vaapi_plugin_base_decide_allocation (GST_VAAPI_PLUGIN_BASE (trans),
       query);
+}
+
+static void
+get_scale_factor (GstVaapiPostproc * const postproc, gdouble * w_factor,
+    gdouble * h_factor)
+{
+  gdouble wd = GST_VIDEO_INFO_WIDTH (&postproc->srcpad_info);
+  gdouble hd = GST_VIDEO_INFO_HEIGHT (&postproc->srcpad_info);
+
+  switch (gst_vaapi_filter_get_video_direction (postproc->filter)) {
+    case GST_VIDEO_ORIENTATION_90R:
+    case GST_VIDEO_ORIENTATION_90L:
+    case GST_VIDEO_ORIENTATION_UR_LL:
+    case GST_VIDEO_ORIENTATION_UL_LR:
+      G_PRIMITIVE_SWAP (gdouble, wd, hd);
+      break;
+    default:
+      break;
+  }
+
+  *w_factor = GST_VIDEO_INFO_WIDTH (&postproc->sinkpad_info)
+      - (postproc->crop_left + postproc->crop_right);
+  *w_factor /= wd;
+
+  *h_factor = GST_VIDEO_INFO_HEIGHT (&postproc->sinkpad_info)
+      - (postproc->crop_top + postproc->crop_bottom);
+  *h_factor /= hd;
+}
+
+static gboolean
+gst_vaapipostproc_src_event (GstBaseTransform * trans, GstEvent * event)
+{
+  GstVaapiPostproc *const postproc = GST_VAAPIPOSTPROC (trans);
+  gdouble new_x = 0, new_y = 0, x = 0, y = 0, w_factor = 1, h_factor = 1;
+  GstStructure *structure;
+  gboolean ret;
+
+  GST_DEBUG_OBJECT (postproc, "handling %s event", GST_EVENT_TYPE_NAME (event));
+
+  switch (GST_EVENT_TYPE (event)) {
+    case GST_EVENT_NAVIGATION:
+      event =
+          GST_EVENT (gst_mini_object_make_writable (GST_MINI_OBJECT (event)));
+
+      structure = (GstStructure *) gst_event_get_structure (event);
+      if (gst_structure_get_double (structure, "pointer_x", &x) &&
+          gst_structure_get_double (structure, "pointer_y", &y)) {
+        GST_DEBUG_OBJECT (postproc, "converting %fx%f", x, y);
+
+        /* video-direction compensation */
+        switch (gst_vaapi_filter_get_video_direction (postproc->filter)) {
+          case GST_VIDEO_ORIENTATION_90R:
+            new_x = y;
+            new_y = GST_VIDEO_INFO_WIDTH (&postproc->srcpad_info) - 1 - x;
+            break;
+          case GST_VIDEO_ORIENTATION_90L:
+            new_x = GST_VIDEO_INFO_HEIGHT (&postproc->srcpad_info) - 1 - y;
+            new_y = x;
+            break;
+          case GST_VIDEO_ORIENTATION_UR_LL:
+            new_x = GST_VIDEO_INFO_HEIGHT (&postproc->srcpad_info) - 1 - y;
+            new_y = GST_VIDEO_INFO_WIDTH (&postproc->srcpad_info) - 1 - x;
+            break;
+          case GST_VIDEO_ORIENTATION_UL_LR:
+            new_x = y;
+            new_y = x;
+            break;
+          case GST_VIDEO_ORIENTATION_180:
+            new_x = GST_VIDEO_INFO_WIDTH (&postproc->srcpad_info) - 1 - x;
+            new_y = GST_VIDEO_INFO_HEIGHT (&postproc->srcpad_info) - 1 - y;
+            break;
+          case GST_VIDEO_ORIENTATION_HORIZ:
+            new_x = GST_VIDEO_INFO_WIDTH (&postproc->srcpad_info) - 1 - x;
+            new_y = y;
+            break;
+          case GST_VIDEO_ORIENTATION_VERT:
+            new_x = x;
+            new_y = GST_VIDEO_INFO_HEIGHT (&postproc->srcpad_info) - 1 - y;
+            break;
+          default:
+            new_x = x;
+            new_y = y;
+            break;
+        }
+
+        /* scale compensation */
+        get_scale_factor (postproc, &w_factor, &h_factor);
+        new_x *= w_factor;
+        new_y *= h_factor;
+
+        /* crop compensation */
+        new_x += postproc->crop_left;
+        new_y += postproc->crop_top;
+
+        GST_DEBUG_OBJECT (postproc, "to %fx%f", new_x, new_y);
+        gst_structure_set (structure, "pointer_x", G_TYPE_DOUBLE, new_x,
+            "pointer_y", G_TYPE_DOUBLE, new_y, NULL);
+      }
+      break;
+    default:
+      break;
+  }
+
+  ret =
+      GST_BASE_TRANSFORM_CLASS (gst_vaapipostproc_parent_class)->src_event
+      (trans, event);
+
+  return ret;
+}
+
+static gboolean
+gst_vaapipostproc_sink_event (GstBaseTransform * trans, GstEvent * event)
+{
+  GstVaapiPostproc *const postproc = GST_VAAPIPOSTPROC (trans);
+  GstTagList *taglist;
+  gchar *orientation;
+  gboolean ret;
+  gboolean do_reconf;
+
+  GST_DEBUG_OBJECT (postproc, "handling %s event", GST_EVENT_TYPE_NAME (event));
+
+  switch (GST_EVENT_TYPE (event)) {
+    case GST_EVENT_TAG:
+      gst_event_parse_tag (event, &taglist);
+
+      if (gst_tag_list_get_string (taglist, "image-orientation", &orientation)) {
+        do_reconf = TRUE;
+        if (!g_strcmp0 ("rotate-0", orientation))
+          postproc->tag_video_direction = GST_VIDEO_ORIENTATION_IDENTITY;
+        else if (!g_strcmp0 ("rotate-90", orientation))
+          postproc->tag_video_direction = GST_VIDEO_ORIENTATION_90R;
+        else if (!g_strcmp0 ("rotate-180", orientation))
+          postproc->tag_video_direction = GST_VIDEO_ORIENTATION_180;
+        else if (!g_strcmp0 ("rotate-270", orientation))
+          postproc->tag_video_direction = GST_VIDEO_ORIENTATION_90L;
+        else if (!g_strcmp0 ("flip-rotate-0", orientation))
+          postproc->tag_video_direction = GST_VIDEO_ORIENTATION_HORIZ;
+        else if (!g_strcmp0 ("flip-rotate-90", orientation))
+          postproc->tag_video_direction = GST_VIDEO_ORIENTATION_UL_LR;
+        else if (!g_strcmp0 ("flip-rotate-180", orientation))
+          postproc->tag_video_direction = GST_VIDEO_ORIENTATION_VERT;
+        else if (!g_strcmp0 ("flip-rotate-270", orientation))
+          postproc->tag_video_direction = GST_VIDEO_ORIENTATION_UR_LL;
+        else
+          do_reconf = FALSE;
+
+        g_free (orientation);
+
+        if (do_reconf) {
+          postproc->flags |= GST_VAAPI_POSTPROC_FLAG_VIDEO_DIRECTION;
+          gst_base_transform_reconfigure_src (trans);
+        }
+      }
+      break;
+    default:
+      break;
+  }
+
+  ret =
+      GST_BASE_TRANSFORM_CLASS (gst_vaapipostproc_parent_class)->sink_event
+      (trans, event);
+
+  return ret;
 }
 
 static void
@@ -1609,9 +1988,35 @@ gst_vaapipostproc_set_property (GObject * object,
       postproc->scale_method = g_value_get_enum (value);
       postproc->flags |= GST_VAAPI_POSTPROC_FLAG_SCALE;
       break;
+    case PROP_VIDEO_DIRECTION:
+      postproc->video_direction = g_value_get_enum (value);
+      postproc->flags |= GST_VAAPI_POSTPROC_FLAG_VIDEO_DIRECTION;
+      break;
+#ifndef GST_REMOVE_DEPRECATED
     case PROP_SKIN_TONE_ENHANCEMENT:
       postproc->skintone_enhance = g_value_get_boolean (value);
       postproc->flags |= GST_VAAPI_POSTPROC_FLAG_SKINTONE;
+      break;
+#endif
+    case PROP_SKIN_TONE_ENHANCEMENT_LEVEL:
+      postproc->skintone_value = g_value_get_uint (value);
+      postproc->flags |= GST_VAAPI_POSTPROC_FLAG_SKINTONE_LEVEL;
+      break;
+    case PROP_CROP_LEFT:
+      postproc->crop_left = g_value_get_uint (value);
+      postproc->flags |= GST_VAAPI_POSTPROC_FLAG_CROP;
+      break;
+    case PROP_CROP_RIGHT:
+      postproc->crop_right = g_value_get_uint (value);
+      postproc->flags |= GST_VAAPI_POSTPROC_FLAG_CROP;
+      break;
+    case PROP_CROP_TOP:
+      postproc->crop_top = g_value_get_uint (value);
+      postproc->flags |= GST_VAAPI_POSTPROC_FLAG_CROP;
+      break;
+    case PROP_CROP_BOTTOM:
+      postproc->crop_bottom = g_value_get_uint (value);
+      postproc->flags |= GST_VAAPI_POSTPROC_FLAG_CROP;
       break;
     default:
       G_OBJECT_WARN_INVALID_PROPERTY_ID (object, prop_id, pspec);
@@ -1670,8 +2075,28 @@ gst_vaapipostproc_get_property (GObject * object,
     case PROP_SCALE_METHOD:
       g_value_set_enum (value, postproc->scale_method);
       break;
+    case PROP_VIDEO_DIRECTION:
+      g_value_set_enum (value, postproc->video_direction);
+      break;
+#ifndef GST_REMOVE_DEPRECATED
     case PROP_SKIN_TONE_ENHANCEMENT:
       g_value_set_boolean (value, postproc->skintone_enhance);
+      break;
+#endif
+    case PROP_SKIN_TONE_ENHANCEMENT_LEVEL:
+      g_value_set_uint (value, postproc->skintone_value);
+      break;
+    case PROP_CROP_LEFT:
+      g_value_set_uint (value, postproc->crop_left);
+      break;
+    case PROP_CROP_RIGHT:
+      g_value_set_uint (value, postproc->crop_right);
+      break;
+    case PROP_CROP_TOP:
+      g_value_set_uint (value, postproc->crop_top);
+      break;
+    case PROP_CROP_BOTTOM:
+      g_value_set_uint (value, postproc->crop_bottom);
       break;
     default:
       G_OBJECT_WARN_INVALID_PROPERTY_ID (object, prop_id, pspec);
@@ -1708,6 +2133,8 @@ gst_vaapipostproc_class_init (GstVaapiPostprocClass * klass)
   trans_class->query = gst_vaapipostproc_query;
   trans_class->propose_allocation = gst_vaapipostproc_propose_allocation;
   trans_class->decide_allocation = gst_vaapipostproc_decide_allocation;
+  trans_class->src_event = gst_vaapipostproc_src_event;
+  trans_class->sink_event = gst_vaapipostproc_sink_event;
 
   trans_class->prepare_output_buffer = gst_vaapipostproc_prepare_output_buffer;
 
@@ -1802,6 +2229,58 @@ gst_vaapipostproc_class_init (GstVaapiPostprocClass * klass)
           0, G_MAXINT, 0, G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS));
 
   /**
+   * GstVaapiPostproc:crop-left:
+   *
+   * The number of pixels to crop at left.
+   */
+  g_object_class_install_property
+      (object_class,
+      PROP_CROP_LEFT,
+      g_param_spec_uint ("crop-left",
+          "Crop Left",
+          "Pixels to crop at left",
+          0, G_MAXINT, 0, G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS));
+
+  /**
+   * GstVaapiPostproc:crop-right:
+   *
+   * The number of pixels to crop at right.
+   */
+  g_object_class_install_property
+      (object_class,
+      PROP_CROP_RIGHT,
+      g_param_spec_uint ("crop-right",
+          "Crop Right",
+          "Pixels to crop at right",
+          0, G_MAXINT, 0, G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS));
+
+  /**
+  * GstVaapiPostproc:crop-top:
+  *
+  * The number of pixels to crop at top.
+  */
+  g_object_class_install_property
+      (object_class,
+      PROP_CROP_TOP,
+      g_param_spec_uint ("crop-top",
+          "Crop Top",
+          "Pixels to crop at top",
+          0, G_MAXINT, 0, G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS));
+
+  /**
+   * GstVaapiPostproc:crop-bottom:
+   *
+   * The number of pixels to crop at bottom.
+   */
+  g_object_class_install_property
+      (object_class,
+      PROP_CROP_BOTTOM,
+      g_param_spec_uint ("crop-bottom",
+          "Crop Bottom",
+          "Pixels to crop at bottom",
+          0, G_MAXINT, 0, G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS));
+
+  /**
    * GstVaapiPostproc:force-aspect-ratio:
    *
    * When enabled, scaling respects video aspect ratio; when disabled,
@@ -1891,6 +2370,18 @@ gst_vaapipostproc_class_init (GstVaapiPostprocClass * klass)
         PROP_SCALE_METHOD, filter_op->pspec);
 
   /**
+   * GstVaapiPostproc:video-direction:
+   *
+   * The video-direction to use, expressed as an enum value. See
+   * #GstVideoDirectionMethod.
+   */
+  filter_op = find_filter_op (filter_ops, GST_VAAPI_FILTER_OP_VIDEO_DIRECTION);
+  if (filter_op)
+    g_object_class_install_property (object_class,
+        PROP_VIDEO_DIRECTION, filter_op->pspec);
+
+#ifndef GST_REMOVE_DEPRECATED
+  /**
    * GstVaapiPostproc:skin-tone-enhancement:
    *
    * Apply the skin tone enhancement algorithm.
@@ -1899,6 +2390,17 @@ gst_vaapipostproc_class_init (GstVaapiPostprocClass * klass)
   if (filter_op)
     g_object_class_install_property (object_class,
         PROP_SKIN_TONE_ENHANCEMENT, filter_op->pspec);
+#endif
+
+  /**
+   * GstVaapiPostproc:skin-tone-enhancement-setting:
+   *
+   * Apply the skin tone enhancement algorithm with specified value.
+   */
+  filter_op = find_filter_op (filter_ops, GST_VAAPI_FILTER_OP_SKINTONE_LEVEL);
+  if (filter_op)
+    g_object_class_install_property (object_class,
+        PROP_SKIN_TONE_ENHANCEMENT_LEVEL, filter_op->pspec);
 
   g_ptr_array_unref (filter_ops);
 }
@@ -1939,6 +2441,19 @@ cb_set_default_value (GstVaapiPostproc * postproc, GPtrArray * filter_ops,
 }
 
 static void
+skintone_set_default_value (GstVaapiPostproc * postproc, GPtrArray * filter_ops)
+{
+  GstVaapiFilterOpInfo *filter_op;
+  GParamSpecUInt *pspec;
+
+  filter_op = find_filter_op (filter_ops, GST_VAAPI_FILTER_OP_SKINTONE_LEVEL);
+  if (!filter_op)
+    return;
+  pspec = G_PARAM_SPEC_UINT (filter_op->pspec);
+  postproc->skintone_value = pspec->default_value;
+}
+
+static void
 gst_vaapipostproc_init (GstVaapiPostproc * postproc)
 {
   GPtrArray *filter_ops;
@@ -1954,11 +2469,18 @@ gst_vaapipostproc_init (GstVaapiPostproc * postproc)
   postproc->field_duration = GST_CLOCK_TIME_NONE;
   postproc->keep_aspect = TRUE;
   postproc->get_va_surfaces = TRUE;
+  postproc->forward_crop = FALSE;
+
+  /* AUTO is not valid for tag_video_direction, this is just to
+   * ensure we setup the method as sink event tag */
+  postproc->tag_video_direction = GST_VIDEO_ORIENTATION_AUTO;
 
   filter_ops = gst_vaapi_filter_get_operations (NULL);
   if (filter_ops) {
     for (i = GST_VAAPI_FILTER_OP_HUE; i <= GST_VAAPI_FILTER_OP_CONTRAST; i++)
       cb_set_default_value (postproc, filter_ops, i);
+
+    skintone_set_default_value (postproc, filter_ops);
     g_ptr_array_unref (filter_ops);
   }
 
@@ -2071,7 +2593,9 @@ gst_vaapipostproc_colorbalance_set_value (GstColorBalance * balance,
   var = cb_get_value_ptr (postproc, channel, &flags);
   if (var) {
     *var = new_val;
+    g_mutex_lock (&postproc->postproc_lock);
     postproc->flags |= flags;
+    g_mutex_unlock (&postproc->postproc_lock);
     gst_color_balance_value_changed (balance, channel, value);
     if (check_filter_update (postproc))
       gst_base_transform_reconfigure_src (GST_BASE_TRANSFORM (postproc));

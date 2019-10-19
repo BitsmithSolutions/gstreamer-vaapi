@@ -132,9 +132,7 @@ gst_vaapi_create_display_from_handle (GstVaapiDisplayType display_type,
   }
   return NULL;
 }
-#endif
 
-#if USE_GST_GL_HELPERS
 static GstVaapiDisplayType
 gst_vaapi_get_display_type_from_gl (GstGLDisplayType gl_display_type,
     GstGLPlatform gl_platform)
@@ -146,9 +144,9 @@ gst_vaapi_get_display_type_from_gl (GstGLDisplayType gl_display_type,
       if (gl_platform == GST_GL_PLATFORM_GLX)
         return GST_VAAPI_DISPLAY_TYPE_GLX;
 #endif
-#endif
       return GST_VAAPI_DISPLAY_TYPE_X11;
     }
+#endif
 #if USE_WAYLAND
     case GST_GL_DISPLAY_TYPE_WAYLAND:{
       return GST_VAAPI_DISPLAY_TYPE_WAYLAND;
@@ -171,7 +169,6 @@ static GstVaapiDisplayType
 gst_vaapi_get_display_type_from_gl_env (void)
 {
   const gchar *const gl_window_type = g_getenv ("GST_GL_WINDOW");
-  const gchar *const gl_platform_type = g_getenv ("GST_GL_PLATFORM");
 
   if (!gl_window_type) {
 #if USE_X11 && GST_GL_HAVE_WINDOW_X11
@@ -191,13 +188,17 @@ gst_vaapi_get_display_type_from_gl_env (void)
     return GST_VAAPI_DISPLAY_TYPE_WAYLAND;
 #endif
 #if USE_EGL
-  if (g_strcmp0 (gl_platform_type, "egl") == 0)
-    return GST_VAAPI_DISPLAY_TYPE_EGL;
+  {
+    const gchar *const gl_platform_type = g_getenv ("GST_GL_PLATFORM");
+    if (g_strcmp0 (gl_platform_type, "egl") == 0)
+      return GST_VAAPI_DISPLAY_TYPE_EGL;
+  }
 #endif
 
   return GST_VAAPI_DISPLAY_TYPE_ANY;
 }
 
+#if USE_EGL
 static gint
 gst_vaapi_get_gles_version_from_gl_api (GstGLAPI gl_api)
 {
@@ -219,27 +220,27 @@ static guintptr
 gst_vaapi_get_egl_handle_from_gl_display (GstGLDisplay * gl_display)
 {
   guintptr egl_handle = 0;
-
-#if USE_EGL && GST_GL_HAVE_PLATFORM_EGL
   GstGLDisplayEGL *egl_display;
+
   egl_display = gst_gl_display_egl_from_gl_display (gl_display);
   if (egl_display) {
     egl_handle = gst_gl_display_get_handle (GST_GL_DISPLAY (egl_display));
     gst_object_unref (egl_display);
   }
-#endif
   return egl_handle;
 }
+#endif /* USE_EGL */
 
 static GstVaapiDisplay *
 gst_vaapi_create_display_from_egl (GstGLDisplay * gl_display,
     GstGLContext * gl_context, GstVaapiDisplayType display_type,
     gpointer native_display)
 {
+  GstVaapiDisplay *display = NULL;
+#if USE_EGL
   GstGLAPI gl_api;
   gint gles_version;
   guintptr egl_handler;
-  GstVaapiDisplay *display = NULL;
 
   gl_api = gst_gl_context_get_gl_api (gl_context);
   gles_version = gst_vaapi_get_gles_version_from_gl_api (gl_api);
@@ -268,7 +269,7 @@ gst_vaapi_create_display_from_egl (GstGLDisplay * gl_display,
     gst_vaapi_display_egl_set_gl_context (GST_VAAPI_DISPLAY_EGL (display),
         GSIZE_TO_POINTER (gst_gl_context_get_gl_context (gl_context)));
   }
-
+#endif
   return display;
 }
 #endif /* USE_GST_GL_HELPERS */
@@ -481,7 +482,7 @@ gst_vaapi_apply_composition (GstVaapiSurface * surface, GstBuffer * buffer)
   if (cmeta)
     composition = cmeta->overlay;
   return gst_vaapi_surface_set_subpictures_from_composition (surface,
-      composition, TRUE);
+      composition);
 }
 
 gboolean
@@ -637,21 +638,31 @@ gst_vaapi_find_preferred_caps_feature (GstPad * pad, GstCaps * allowed_caps,
 {
   GstVaapiCapsFeature feature = GST_VAAPI_CAPS_FEATURE_NOT_NEGOTIATED;
   guint i, j, num_structures;
-  GstCaps *out_caps, *caps = NULL;
+  GstCaps *peer_caps, *out_caps = NULL, *caps = NULL;
   static const guint feature_list[] = { GST_VAAPI_CAPS_FEATURE_VAAPI_SURFACE,
     GST_VAAPI_CAPS_FEATURE_DMABUF,
     GST_VAAPI_CAPS_FEATURE_GL_TEXTURE_UPLOAD_META,
     GST_VAAPI_CAPS_FEATURE_SYSTEM_MEMORY,
   };
 
-  out_caps = gst_pad_peer_query_caps (pad, allowed_caps);
-  if (!out_caps)
+  /* query with no filter */
+  peer_caps = gst_pad_peer_query_caps (pad, NULL);
+  if (!peer_caps)
+    goto cleanup;
+  if (gst_caps_is_empty (peer_caps))
     goto cleanup;
 
-  if (gst_caps_is_any (out_caps) || gst_caps_is_empty (out_caps))
-    goto cleanup;
+  /* filter against our allowed caps */
+  out_caps = gst_caps_intersect_full (allowed_caps, peer_caps,
+      GST_CAPS_INTERSECT_FIRST);
 
+  /* default feature */
   feature = GST_VAAPI_CAPS_FEATURE_SYSTEM_MEMORY;
+
+  /* if downstream requests caps ANY, system memory is preferred */
+  if (gst_caps_is_any (peer_caps))
+    goto find_format;
+
   num_structures = gst_caps_get_size (out_caps);
   for (i = 0; i < num_structures; i++) {
     GstCapsFeatures *const features = gst_caps_get_features (out_caps, i);
@@ -684,19 +695,31 @@ gst_vaapi_find_preferred_caps_feature (GstPad * pad, GstCaps * allowed_caps,
   if (!caps)
     goto cleanup;
 
+find_format:
   if (out_format_ptr) {
     GstVideoFormat out_format;
-    GstStructure *structure;
+    GstStructure *structure = NULL;
     const GValue *format_list;
+    GstCapsFeatures *features;
 
-    /* if the best feature is SystemMemory, we should use the first
-     * caps in the peer caps set, which is the preferred by
-     * downstream. */
-    if (feature == GST_VAAPI_CAPS_FEATURE_SYSTEM_MEMORY)
+    /* if the best feature is SystemMemory, we should choose the
+     * vidoe/x-raw caps in the filtered peer caps set. If not, use
+     * the first caps, which is the preferred by downstream. */
+    if (feature == GST_VAAPI_CAPS_FEATURE_SYSTEM_MEMORY) {
       gst_caps_replace (&caps, out_caps);
-
-    /* use the first caps, which is the preferred by downstream. */
-    structure = gst_caps_get_structure (caps, 0);
+      num_structures = gst_caps_get_size (caps);
+      for (i = 0; i < num_structures; i++) {
+        structure = gst_caps_get_structure (caps, i);
+        features = gst_caps_get_features (caps, i);
+        if (!gst_caps_features_is_any (features)
+            && gst_caps_features_contains (features,
+                gst_vaapi_caps_feature_to_string
+                (GST_VAAPI_CAPS_FEATURE_SYSTEM_MEMORY)))
+          break;
+      }
+    } else {
+      structure = gst_caps_get_structure (caps, 0);
+    }
     if (!structure)
       goto cleanup;
     format_list = gst_structure_get_value (structure, "format");
@@ -712,6 +735,7 @@ gst_vaapi_find_preferred_caps_feature (GstPad * pad, GstCaps * allowed_caps,
 cleanup:
   gst_caps_replace (&caps, NULL);
   gst_caps_replace (&out_caps, NULL);
+  gst_caps_replace (&peer_caps, NULL);
   return feature;
 }
 
@@ -930,7 +954,6 @@ gst_vaapi_driver_is_whitelisted (GstVaapiDisplay * display)
   guint i;
   static const gchar *whitelist[] = {
     "Intel i965 driver",
-    "mesa gallium",
     NULL
   };
 

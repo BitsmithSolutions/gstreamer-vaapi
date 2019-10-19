@@ -29,16 +29,43 @@
 
 G_BEGIN_DECLS
 
+typedef struct _GstVaapiConfigSurfaceAttributes GstVaapiConfigSurfaceAttributes;
+
+
+/**
+ * GstVaapiConfigSurfaceAttributes:
+ * @min_width: Minimal width in pixels.
+ * @min_height: Minimal height in pixels.
+ * @max_width: Maximal width in pixels.
+ * @max_height: Maximal height in pixels.
+ * @mem_types: Surface memory type expressed in bit fields.
+ * @formats: Array of avialable GstVideoFormats of a surface in a VAConfig.
+ *
+ * Represents the possible surface attributes for the supplied config.
+ **/
+struct _GstVaapiConfigSurfaceAttributes
+{
+  gint min_width;
+  gint min_height;
+  gint max_width;
+  gint max_height;
+  guint mem_types;
+  GArray *formats;
+};
+
 /* Gets attribute value for the supplied profile/entrypoint pair (MT-safe) */
 G_GNUC_INTERNAL
 gboolean
 gst_vaapi_get_config_attribute (GstVaapiDisplay * display, VAProfile profile,
     VAEntrypoint entrypoint, VAConfigAttribType type, guint * out_value_ptr);
 
-/* Gets the available GstVideoFormats of a surface in a VAConfig */
 G_GNUC_INTERNAL
-GArray *
-gst_vaapi_get_surface_formats (GstVaapiDisplay * display, VAConfigID config);
+GstVaapiConfigSurfaceAttributes *
+gst_vaapi_config_surface_attributes_get (GstVaapiDisplay * display, VAConfigID config);
+
+G_GNUC_INTERNAL
+void
+gst_vaapi_config_surface_attributes_free (GstVaapiConfigSurfaceAttributes * attribs);
 
 G_END_DECLS
 

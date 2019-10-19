@@ -164,7 +164,7 @@ ensure_hw_profile (GstVaapiEncoderJpeg * encoder)
 error_unsupported_profile:
   {
     GST_ERROR ("unsupported HW profile %s",
-        gst_vaapi_profile_get_name (encoder->profile));
+        gst_vaapi_profile_get_va_name (encoder->profile));
     return FALSE;
   }
 }
@@ -743,52 +743,136 @@ gst_vaapi_encoder_jpeg_reconfigure (GstVaapiEncoder * base_encoder)
   return set_context_info (base_encoder);
 }
 
-static gboolean
-gst_vaapi_encoder_jpeg_init (GstVaapiEncoder * base_encoder)
+struct _GstVaapiEncoderJpegClass
 {
-  GstVaapiEncoderJpeg *const encoder = GST_VAAPI_ENCODER_JPEG (base_encoder);
+  GstVaapiEncoderClass parent_class;
+};
 
+G_DEFINE_TYPE (GstVaapiEncoderJpeg, gst_vaapi_encoder_jpeg,
+    GST_TYPE_VAAPI_ENCODER);
+
+static void
+gst_vaapi_encoder_jpeg_init (GstVaapiEncoderJpeg * encoder)
+{
   encoder->has_quant_tables = FALSE;
   memset (&encoder->quant_tables, 0, sizeof (encoder->quant_tables));
   memset (&encoder->scaled_quant_tables, 0,
       sizeof (encoder->scaled_quant_tables));
   encoder->has_huff_tables = FALSE;
   memset (&encoder->huff_tables, 0, sizeof (encoder->huff_tables));
-
-  return TRUE;
 }
+
+/**
+ * @ENCODER_JPEG_PROP_RATECONTROL: Rate control (#GstVaapiRateControl).
+ * @ENCODER_JPEG_PROP_TUNE: The tuning options (#GstVaapiEncoderTune).
+ * @ENCODER_JPEG_PROP_QUALITY: Quality Factor value (uint).
+ *
+ * The set of JPEG encoder specific configurable properties.
+ */
+enum
+{
+  ENCODER_JPEG_PROP_RATECONTROL = 1,
+  ENCODER_JPEG_PROP_TUNE,
+  ENCODER_JPEG_PROP_QUALITY,
+  ENCODER_JPEG_N_PROPERTIES
+};
+
+static GParamSpec *properties[ENCODER_JPEG_N_PROPERTIES];
 
 static void
-gst_vaapi_encoder_jpeg_finalize (GstVaapiEncoder * base_encoder)
+gst_vaapi_encoder_jpeg_set_property (GObject * object, guint prop_id,
+    const GValue * value, GParamSpec * pspec)
 {
-}
+  GstVaapiEncoder *const base_encoder = GST_VAAPI_ENCODER (object);
+  GstVaapiEncoderJpeg *const encoder = GST_VAAPI_ENCODER_JPEG (object);
 
-static GstVaapiEncoderStatus
-gst_vaapi_encoder_jpeg_set_property (GstVaapiEncoder * base_encoder,
-    gint prop_id, const GValue * value)
-{
-  GstVaapiEncoderJpeg *const encoder = GST_VAAPI_ENCODER_JPEG (base_encoder);
+  if (base_encoder->num_codedbuf_queued > 0) {
+    GST_ERROR_OBJECT (object,
+        "failed to set any property after encoding started");
+    return;
+  }
 
   switch (prop_id) {
-    case GST_VAAPI_ENCODER_JPEG_PROP_QUALITY:
+    case ENCODER_JPEG_PROP_RATECONTROL:
+      gst_vaapi_encoder_set_rate_control (base_encoder,
+          g_value_get_enum (value));
+      break;
+    case ENCODER_JPEG_PROP_TUNE:
+      gst_vaapi_encoder_set_tuning (base_encoder, g_value_get_enum (value));
+      break;
+    case ENCODER_JPEG_PROP_QUALITY:
       encoder->quality = g_value_get_uint (value);
       break;
     default:
-      return GST_VAAPI_ENCODER_STATUS_ERROR_INVALID_PARAMETER;
+      G_OBJECT_WARN_INVALID_PROPERTY_ID (object, prop_id, pspec);
   }
-  return GST_VAAPI_ENCODER_STATUS_SUCCESS;
+}
+
+static void
+gst_vaapi_encoder_jpeg_get_property (GObject * object, guint prop_id,
+    GValue * value, GParamSpec * pspec)
+{
+  GstVaapiEncoderJpeg *const encoder = GST_VAAPI_ENCODER_JPEG (object);
+  GstVaapiEncoder *const base_encoder = GST_VAAPI_ENCODER (object);
+
+  switch (prop_id) {
+    case ENCODER_JPEG_PROP_RATECONTROL:
+      g_value_set_enum (value, base_encoder->rate_control);
+      break;
+    case ENCODER_JPEG_PROP_TUNE:
+      g_value_set_enum (value, base_encoder->tune);
+      break;
+    case ENCODER_JPEG_PROP_QUALITY:
+      g_value_set_uint (value, encoder->quality);
+      break;
+    default:
+      G_OBJECT_WARN_INVALID_PROPERTY_ID (object, prop_id, pspec);
+  }
 }
 
 GST_VAAPI_ENCODER_DEFINE_CLASS_DATA (JPEG);
 
-static inline const GstVaapiEncoderClass *
-gst_vaapi_encoder_jpeg_class (void)
+static void
+gst_vaapi_encoder_jpeg_class_init (GstVaapiEncoderJpegClass * klass)
 {
-  static const GstVaapiEncoderClass GstVaapiEncoderJpegClass = {
-    GST_VAAPI_ENCODER_CLASS_INIT (Jpeg, jpeg),
-    .set_property = gst_vaapi_encoder_jpeg_set_property,
-  };
-  return &GstVaapiEncoderJpegClass;
+  GObjectClass *const object_class = G_OBJECT_CLASS (klass);
+  GstVaapiEncoderClass *const encoder_class = GST_VAAPI_ENCODER_CLASS (klass);
+
+  encoder_class->class_data = &g_class_data;
+  encoder_class->reconfigure = gst_vaapi_encoder_jpeg_reconfigure;
+  encoder_class->reordering = gst_vaapi_encoder_jpeg_reordering;
+  encoder_class->encode = gst_vaapi_encoder_jpeg_encode;
+  encoder_class->flush = gst_vaapi_encoder_jpeg_flush;
+
+  object_class->set_property = gst_vaapi_encoder_jpeg_set_property;
+  object_class->get_property = gst_vaapi_encoder_jpeg_get_property;
+
+  properties[ENCODER_JPEG_PROP_RATECONTROL] =
+      g_param_spec_enum ("rate-control",
+      "Rate Control", "Rate control mode",
+      g_class_data.rate_control_get_type (),
+      g_class_data.default_rate_control,
+      G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS | G_PARAM_CONSTRUCT |
+      GST_VAAPI_PARAM_ENCODER_EXPOSURE);
+
+  properties[ENCODER_JPEG_PROP_TUNE] =
+      g_param_spec_enum ("tune",
+      "Encoder Tuning",
+      "Encoder tuning option",
+      g_class_data.encoder_tune_get_type (),
+      g_class_data.default_encoder_tune,
+      G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS | G_PARAM_CONSTRUCT |
+      GST_VAAPI_PARAM_ENCODER_EXPOSURE);
+
+  properties[ENCODER_JPEG_PROP_QUALITY] =
+      g_param_spec_uint ("quality",
+      "Quality factor",
+      "Quality factor", 0, 100, 50,
+      G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS | G_PARAM_CONSTRUCT |
+      GST_VAAPI_PARAM_ENCODER_EXPOSURE);
+
+  g_object_class_install_properties (object_class, ENCODER_JPEG_N_PROPERTIES,
+      properties);
 }
 
 /**
@@ -802,35 +886,5 @@ gst_vaapi_encoder_jpeg_class (void)
 GstVaapiEncoder *
 gst_vaapi_encoder_jpeg_new (GstVaapiDisplay * display)
 {
-  return gst_vaapi_encoder_new (gst_vaapi_encoder_jpeg_class (), display);
-}
-
-/**
- * gst_vaapi_encoder_jpeg_get_default_properties:
- *
- * Determines the set of common and jpeg specific encoder properties.
- * The caller owns an extra reference to the resulting array of
- * #GstVaapiEncoderPropInfo elements, so it shall be released with
- * g_ptr_array_unref() after usage.
- *
- * Return value: the set of encoder properties for #GstVaapiEncoderJpeg,
- *   or %NULL if an error occurred.
- */
-GPtrArray *
-gst_vaapi_encoder_jpeg_get_default_properties (void)
-{
-  const GstVaapiEncoderClass *const klass = gst_vaapi_encoder_jpeg_class ();
-  GPtrArray *props;
-
-  props = gst_vaapi_encoder_properties_get_default (klass);
-  if (!props)
-    return NULL;
-
-  GST_VAAPI_ENCODER_PROPERTIES_APPEND (props,
-      GST_VAAPI_ENCODER_JPEG_PROP_QUALITY,
-      g_param_spec_uint ("quality",
-          "Quality factor",
-          "Quality factor",
-          0, 100, 50, G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS));
-  return props;
+  return g_object_new (GST_TYPE_VAAPI_ENCODER_JPEG, "display", display, NULL);
 }

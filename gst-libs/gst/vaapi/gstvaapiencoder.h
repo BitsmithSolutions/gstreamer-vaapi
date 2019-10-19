@@ -29,10 +29,25 @@
 
 G_BEGIN_DECLS
 
-#define GST_VAAPI_ENCODER(encoder) \
-    ((GstVaapiEncoder *) (encoder))
+#define GST_TYPE_VAAPI_ENCODER \
+    (gst_vaapi_encoder_get_type ())
+#define GST_VAAPI_ENCODER(obj) \
+    (G_TYPE_CHECK_INSTANCE_CAST ((obj), GST_TYPE_VAAPI_ENCODER, GstVaapiEncoder))
+#define GST_VAAPI_IS_ENCODER(obj) \
+    (G_TYPE_CHECK_INSTANCE_TYPE ((obj), GST_TYPE_VAAPI_ENCODER))
 
 typedef struct _GstVaapiEncoder GstVaapiEncoder;
+
+GType
+gst_vaapi_encoder_get_type (void) G_GNUC_CONST;
+
+/**
+ * GST_VAAPI_PARAM_ENCODER_EXPOSURE: (value 65536)
+ *
+ * This user defined flag is added when the internal encoder class
+ * wants to expose its property gparam spec to the according encode
+ * class. */
+#define GST_VAAPI_PARAM_ENCODER_EXPOSURE GST_PARAM_USER_SHIFT
 
 /**
  * GstVaapiEncoderStatus:
@@ -110,48 +125,11 @@ typedef enum {
   GST_VAAPI_ENCODER_MBBRC_OFF = 2,
 } GstVaapiEncoderMbbrc;
 
-/**
- * GstVaapiEncoderProp:
- * @GST_VAAPI_ENCODER_PROP_RATECONTROL: Rate control (#GstVaapiRateControl).
- * @GST_VAAPI_ENCODER_PROP_BITRATE: Bitrate expressed in kbps (uint).
- * @GST_VAAPI_ENCODER_PROP_KEYFRAME_PERIOD: The maximal distance
- *   between two keyframes (uint).
- * @GST_VAAPI_ENCODER_PROP_TUNE: The tuning options (#GstVaapiEncoderTune).
- *
- * The set of configurable properties for the encoder.
- */
-typedef enum {
-  GST_VAAPI_ENCODER_PROP_RATECONTROL = 1,
-  GST_VAAPI_ENCODER_PROP_BITRATE,
-  GST_VAAPI_ENCODER_PROP_KEYFRAME_PERIOD,
-  GST_VAAPI_ENCODER_PROP_TUNE,
-  GST_VAAPI_ENCODER_PROP_QUALITY_LEVEL,
-  GST_VAAPI_ENCODER_PROP_DEFAULT_ROI_VALUE
-} GstVaapiEncoderProp;
-
-/**
- * GstVaapiEncoderPropInfo:
- * @prop: the #GstVaapiEncoderProp
- * @pspec: the #GParamSpec describing the associated configurable value
- *
- * A #GstVaapiEncoderProp descriptor.
- */
-typedef struct {
-  const gint prop;
-  GParamSpec *const pspec;
-} GstVaapiEncoderPropInfo;
-
 GType
 gst_vaapi_encoder_tune_get_type (void) G_GNUC_CONST;
 
 GType
 gst_vaapi_encoder_mbbrc_get_type (void) G_GNUC_CONST;
-
-GstVaapiEncoder *
-gst_vaapi_encoder_ref (GstVaapiEncoder * encoder);
-
-void
-gst_vaapi_encoder_unref (GstVaapiEncoder * encoder);
 
 void
 gst_vaapi_encoder_replace (GstVaapiEncoder ** old_encoder_ptr,
@@ -166,15 +144,15 @@ gst_vaapi_encoder_set_codec_state (GstVaapiEncoder * encoder,
     GstVideoCodecState * state);
 
 GstVaapiEncoderStatus
-gst_vaapi_encoder_set_property (GstVaapiEncoder * encoder, gint prop_id,
-    const GValue * value);
-
-GstVaapiEncoderStatus
 gst_vaapi_encoder_set_rate_control (GstVaapiEncoder * encoder,
     GstVaapiRateControl rate_control);
 
 GstVaapiEncoderStatus
 gst_vaapi_encoder_set_bitrate (GstVaapiEncoder * encoder, guint bitrate);
+
+GstVaapiEncoderStatus
+gst_vaapi_encoder_set_target_percentage (GstVaapiEncoder * encoder,
+    guint target_percentage);
 
 GstVaapiEncoderStatus
 gst_vaapi_encoder_put_frame (GstVaapiEncoder * encoder,
@@ -193,6 +171,9 @@ gst_vaapi_encoder_set_quality_level (GstVaapiEncoder * encoder,
     guint quality_level);
 
 GstVaapiEncoderStatus
+gst_vaapi_encoder_set_trellis (GstVaapiEncoder * encoder, gboolean trellis);
+
+GstVaapiEncoderStatus
 gst_vaapi_encoder_get_buffer_with_timeout (GstVaapiEncoder * encoder,
     GstVaapiCodedBufferProxy ** out_codedbuf_proxy_ptr, guint64 timeout);
 
@@ -202,6 +183,10 @@ gst_vaapi_encoder_flush (GstVaapiEncoder * encoder);
 GArray *
 gst_vaapi_encoder_get_surface_formats (GstVaapiEncoder * encoder,
     GstVaapiProfile profile);
+
+GstVaapiProfile
+gst_vaapi_encoder_get_profile (GstVaapiEncoder * encoder);
+
 G_END_DECLS
 
 #endif /* GST_VAAPI_ENCODER_H */

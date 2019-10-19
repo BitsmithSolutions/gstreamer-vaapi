@@ -369,10 +369,15 @@ gst_vaapi_frame_store_add (GstVaapiFrameStore * fs,
 
   field = picture->structure == GST_VAAPI_PICTURE_STRUCTURE_TOP_FIELD ?
       TOP_FIELD : BOTTOM_FIELD;
-  g_return_val_if_fail (fs->buffers[0]->field_poc[field] == G_MAXINT32, FALSE);
+
+  if (fs->buffers[0]->field_poc[field] != G_MAXINT32)
+    return FALSE;
   fs->buffers[0]->field_poc[field] = picture->field_poc[field];
-  g_return_val_if_fail (picture->field_poc[!field] == G_MAXINT32, FALSE);
+
+  if (picture->field_poc[!field] != G_MAXINT32)
+    return FALSE;
   picture->field_poc[!field] = fs->buffers[0]->field_poc[!field];
+
   return TRUE;
 }
 
@@ -744,7 +749,8 @@ dpb_output (GstVaapiDecoderH264 * decoder, GstVaapiFrameStore * fs)
 
   for (i = 0; i < fs->num_buffers; i++) {
     GstVaapiPictureH264 *const pic = fs->buffers[i];
-    g_return_val_if_fail (pic != NULL, FALSE);
+    if (pic == NULL)
+      return FALSE;
     pic->output_needed = FALSE;
     if (!GST_VAAPI_PICTURE_FLAG_IS_SET (pic, GST_VAAPI_PICTURE_FLAG_GHOST))
       picture = pic;
@@ -1766,7 +1772,7 @@ parse_sps (GstVaapiDecoderH264 * decoder, GstVaapiDecoderUnit * unit)
      standard but that should get a default value anyway */
   sps->log2_max_pic_order_cnt_lsb_minus4 = 0;
 
-  result = gst_h264_parser_parse_sps (priv->parser, &pi->nalu, sps, TRUE);
+  result = gst_h264_parser_parse_sps (priv->parser, &pi->nalu, sps);
   if (result != GST_H264_PARSER_OK)
     return get_status (result);
 
@@ -1788,8 +1794,7 @@ parse_subset_sps (GstVaapiDecoderH264 * decoder, GstVaapiDecoderUnit * unit)
      standard but that should get a default value anyway */
   sps->log2_max_pic_order_cnt_lsb_minus4 = 0;
 
-  result = gst_h264_parser_parse_subset_sps (priv->parser, &pi->nalu, sps,
-      TRUE);
+  result = gst_h264_parser_parse_subset_sps (priv->parser, &pi->nalu, sps);
   if (result != GST_H264_PARSER_OK)
     return get_status (result);
 
@@ -3995,8 +4000,8 @@ decode_picture (GstVaapiDecoderH264 * decoder, GstVaapiDecoderUnit * unit)
   GstVaapiPictureH264 *picture, *first_field;
   GstVaapiDecoderStatus status;
 
-  g_return_val_if_fail (pps != NULL, GST_VAAPI_DECODER_STATUS_ERROR_UNKNOWN);
-  g_return_val_if_fail (sps != NULL, GST_VAAPI_DECODER_STATUS_ERROR_UNKNOWN);
+  if (!(pps && sps))
+    return GST_VAAPI_DECODER_STATUS_ERROR_UNKNOWN;
 
   status = ensure_context (decoder, sps);
   if (status != GST_VAAPI_DECODER_STATUS_SUCCESS)
@@ -4313,9 +4318,22 @@ decode_unit (GstVaapiDecoderH264 * decoder, GstVaapiDecoderUnit * unit)
     case GST_H264_NAL_SEI:
       status = decode_sei (decoder, unit);
       break;
+    case GST_H264_NAL_SLICE_DPA:
+    case GST_H264_NAL_SLICE_DPB:
+    case GST_H264_NAL_SLICE_DPC:
+    case GST_H264_NAL_AU_DELIMITER:
+    case GST_H264_NAL_FILLER_DATA:
+    case GST_H264_NAL_SPS_EXT:
+    case GST_H264_NAL_PREFIX_UNIT:
+    case GST_H264_NAL_DEPTH_SPS:
+    case GST_H264_NAL_SLICE_AUX:
+    case GST_H264_NAL_SLICE_DEPTH:
+      GST_DEBUG ("unsupported NAL unit type %d, just skip", pi->nalu.type);
+      status = GST_VAAPI_DECODER_STATUS_SUCCESS;
+      break;
     default:
-      GST_WARNING ("unsupported NAL unit type %d", pi->nalu.type);
-      status = GST_VAAPI_DECODER_STATUS_ERROR_BITSTREAM_PARSER;
+      GST_WARNING ("unknown NAL unit type id %d, skip", pi->nalu.type);
+      status = GST_VAAPI_DECODER_STATUS_SUCCESS;
       break;
   }
   return status;

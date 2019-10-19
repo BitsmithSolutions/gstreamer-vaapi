@@ -23,6 +23,8 @@
  *  Boston, MA 02110-1301 USA
  */
 
+#include <gst/vaapi/gstvaapifilter.h>
+
 #include "gstvaapipostprocutil.h"
 #include "gstvaapipluginutil.h"
 
@@ -176,6 +178,22 @@ _fixate_frame_size (GstVaapiPostproc * postproc, GstVideoInfo * vinfo,
     from_par_d = GST_VIDEO_INFO_PAR_D (vinfo);
     from_w = GST_VIDEO_INFO_WIDTH (vinfo);
     from_h = GST_VIDEO_INFO_HEIGHT (vinfo);
+
+    /* adjust for crop settings */
+    from_w -= postproc->crop_left + postproc->crop_right;
+    from_h -= postproc->crop_top + postproc->crop_bottom;
+
+    /* compensate for rotation if needed */
+    switch (gst_vaapi_filter_get_video_direction (postproc->filter)) {
+      case GST_VIDEO_ORIENTATION_90R:
+      case GST_VIDEO_ORIENTATION_90L:
+      case GST_VIDEO_ORIENTATION_UL_LR:
+      case GST_VIDEO_ORIENTATION_UR_LL:
+        G_PRIMITIVE_SWAP (gint, from_w, from_h);
+        G_PRIMITIVE_SWAP (gint, from_par_n, from_par_d);
+      default:
+        break;
+    }
 
     gst_structure_get_int (outs, "width", &w);
     gst_structure_get_int (outs, "height", &h);
@@ -709,9 +727,11 @@ _get_preferred_caps (GstVaapiPostproc * postproc, GstVideoInfo * vinfo,
 
   /* we don't need to do format conversion if GL_TEXTURE_UPLOAD_META
    * is negotiated */
-  if (f != GST_VAAPI_CAPS_FEATURE_GL_TEXTURE_UPLOAD_META
-      && postproc->format != format)
+  if (f == GST_VAAPI_CAPS_FEATURE_GL_TEXTURE_UPLOAD_META) {
+    postproc->format = DEFAULT_FORMAT;
+  } else if (postproc->format != format) {
     postproc->format = format;
+  }
 
   return outcaps;
 

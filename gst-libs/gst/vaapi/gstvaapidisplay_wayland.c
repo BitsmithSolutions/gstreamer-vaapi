@@ -35,11 +35,8 @@
 #define DEBUG_VAAPI_DISPLAY 1
 #include "gstvaapidebug.h"
 
-#define _do_init \
-    G_ADD_PRIVATE (GstVaapiDisplayWayland);
-
-G_DEFINE_TYPE_WITH_CODE (GstVaapiDisplayWayland, gst_vaapi_display_wayland,
-    GST_TYPE_VAAPI_DISPLAY, _do_init);
+G_DEFINE_TYPE_WITH_PRIVATE (GstVaapiDisplayWayland, gst_vaapi_display_wayland,
+    GST_TYPE_VAAPI_DISPLAY);
 
 static inline const gchar *
 get_default_display_name (void)
@@ -98,6 +95,17 @@ static const struct wl_output_listener output_listener = {
 };
 
 static void
+handle_xdg_wm_base_ping (void *user_data, struct xdg_wm_base *xdg_wm_base,
+    uint32_t serial)
+{
+  xdg_wm_base_pong (xdg_wm_base, serial);
+}
+
+static const struct xdg_wm_base_listener xdg_wm_base_listener = {
+  handle_xdg_wm_base_ping
+};
+
+static void
 registry_handle_global (void *data,
     struct wl_registry *registry,
     uint32_t id, const char *interface, uint32_t version)
@@ -108,8 +116,12 @@ registry_handle_global (void *data,
     priv->compositor =
         wl_registry_bind (registry, id, &wl_compositor_interface, 1);
   else if (strcmp (interface, "wl_shell") == 0)
-    priv->shell = wl_registry_bind (registry, id, &wl_shell_interface, 1);
-  else if (strcmp (interface, "wl_output") == 0) {
+    priv->wl_shell = wl_registry_bind (registry, id, &wl_shell_interface, 1);
+  else if (strcmp (interface, "xdg_wm_base") == 0) {
+    priv->xdg_wm_base =
+        wl_registry_bind (registry, id, &xdg_wm_base_interface, 1);
+    xdg_wm_base_add_listener (priv->xdg_wm_base, &xdg_wm_base_listener, priv);
+  } else if (strcmp (interface, "wl_output") == 0) {
     priv->output = wl_registry_bind (registry, id, &wl_output_interface, 1);
     wl_output_add_listener (priv->output, &output_listener, priv);
   }
@@ -145,10 +157,14 @@ gst_vaapi_display_wayland_setup (GstVaapiDisplay * display)
     return FALSE;
   }
 
-  if (!priv->shell) {
-    GST_ERROR ("failed to bind shell interface");
+  if (priv->xdg_wm_base)
+    return TRUE;
+
+  if (!priv->wl_shell) {
+    GST_ERROR ("failed to bind wl_shell interface");
     return FALSE;
   }
+
   return TRUE;
 }
 
@@ -194,7 +210,8 @@ gst_vaapi_display_wayland_close_display (GstVaapiDisplay * display)
       GST_VAAPI_DISPLAY_WAYLAND_GET_PRIVATE (display);
 
   g_clear_pointer (&priv->output, wl_output_destroy);
-  g_clear_pointer (&priv->shell, wl_shell_destroy);
+  g_clear_pointer (&priv->wl_shell, wl_shell_destroy);
+  g_clear_pointer (&priv->xdg_wm_base, xdg_wm_base_destroy);
   g_clear_pointer (&priv->compositor, wl_compositor_destroy);
   g_clear_pointer (&priv->registry, wl_registry_destroy);
 

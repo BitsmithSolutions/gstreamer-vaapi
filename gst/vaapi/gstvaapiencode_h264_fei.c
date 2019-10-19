@@ -27,12 +27,11 @@
  *
  * Encodes raw video streams into H.264 bitstreams.
  *
- * <refsect2>
- * <title>Example launch line</title>
+ * ## Example launch line
+ *
  * |[
  *  gst-launch-1.0 -ev videotestsrc num-buffers=60 !  vaapih264feienc fei-mode=ENC_PAK ! filesink location=test.264
  * ]|
- * </refsect2>
  */
 
 #include "gstcompat.h"
@@ -64,6 +63,8 @@ static const char gst_vaapiencode_h264_fei_sink_caps_str[] =
   GST_VAAPI_MAKE_SURFACE_CAPS ", "
   GST_CAPS_INTERLACED_FALSE "; "
   GST_VIDEO_CAPS_MAKE (GST_VIDEO_FORMATS_ALL) ", "
+  GST_CAPS_INTERLACED_FALSE ";"
+  GST_VAAPI_MAKE_DMABUF_CAPS ","
   GST_CAPS_INTERLACED_FALSE;
 /* *INDENT-ON* */
 
@@ -96,43 +97,13 @@ G_DEFINE_TYPE (GstVaapiEncodeH264Fei, gst_vaapiencode_h264_fei,
 static void
 gst_vaapiencode_h264_fei_init (GstVaapiEncodeH264Fei * encode)
 {
-  gst_vaapiencode_init_properties (GST_VAAPIENCODE_CAST (encode));
+  /* nothing to do here */
 }
 
 static void
 gst_vaapiencode_h264_fei_finalize (GObject * object)
 {
   G_OBJECT_CLASS (gst_vaapiencode_h264_fei_parent_class)->finalize (object);
-}
-
-static void
-gst_vaapiencode_h264_fei_set_property (GObject * object,
-    guint prop_id, const GValue * value, GParamSpec * pspec)
-{
-  GstVaapiEncodeClass *const encode_class = GST_VAAPIENCODE_GET_CLASS (object);
-  GstVaapiEncode *const base_encode = GST_VAAPIENCODE_CAST (object);
-
-  switch (prop_id) {
-    default:
-      if (!encode_class->set_property (base_encode, prop_id, value))
-        G_OBJECT_WARN_INVALID_PROPERTY_ID (object, prop_id, pspec);
-      break;
-  }
-}
-
-static void
-gst_vaapiencode_h264_fei_get_property (GObject * object,
-    guint prop_id, GValue * value, GParamSpec * pspec)
-{
-  GstVaapiEncodeClass *const encode_class = GST_VAAPIENCODE_GET_CLASS (object);
-  GstVaapiEncode *const base_encode = GST_VAAPIENCODE_CAST (object);
-
-  switch (prop_id) {
-    default:
-      if (!encode_class->get_property (base_encode, prop_id, value))
-        G_OBJECT_WARN_INVALID_PROPERTY_ID (object, prop_id, pspec);
-      break;
-  }
 }
 
 typedef struct
@@ -270,7 +241,7 @@ _h264_byte_stream_next_nal (guint8 * buffer, guint32 len, guint32 * nal_size)
   guint32 flag = 0xFFFFFFFF;
   guint32 nal_start_len = 0;
 
-  g_assert (len >= 0 && buffer && nal_size);
+  g_assert (buffer && nal_size);
   if (len < 3) {
     *nal_size = len;
     nal_start = (len ? buffer : NULL);
@@ -503,16 +474,15 @@ gst_vaapiencode_h264_fei_class_init (GstVaapiEncodeH264FeiClass * klass)
   GObjectClass *const object_class = G_OBJECT_CLASS (klass);
   GstElementClass *const element_class = GST_ELEMENT_CLASS (klass);
   GstVaapiEncodeClass *const encode_class = GST_VAAPIENCODE_CLASS (klass);
+  gpointer encoder_class;
 
   GST_DEBUG_CATEGORY_INIT (gst_vaapi_h264_fei_encode_debug,
       GST_PLUGIN_NAME, 0, GST_PLUGIN_DESC);
 
   object_class->finalize = gst_vaapiencode_h264_fei_finalize;
-  object_class->set_property = gst_vaapiencode_h264_fei_set_property;
-  object_class->get_property = gst_vaapiencode_h264_fei_get_property;
+  object_class->set_property = gst_vaapiencode_set_property_subclass;
+  object_class->get_property = gst_vaapiencode_get_property_subclass;
 
-  encode_class->get_properties =
-      gst_vaapi_encoder_h264_fei_get_default_properties;
   encode_class->set_config = gst_vaapiencode_h264_fei_set_config;
   encode_class->get_caps = gst_vaapiencode_h264_fei_get_caps;
   encode_class->alloc_encoder = gst_vaapiencode_h264_fei_alloc_encoder;
@@ -536,5 +506,8 @@ gst_vaapiencode_h264_fei_class_init (GstVaapiEncodeH264FeiClass * klass)
   gst_element_class_add_static_pad_template (element_class,
       &gst_vaapiencode_h264_fei_src_factory);
 
-  gst_vaapiencode_class_init_properties (encode_class);
+  encoder_class = g_type_class_ref (GST_TYPE_VAAPI_ENCODER_H264_FEI);
+  g_assert (encoder_class);
+  gst_vaapiencode_class_install_properties (encode_class, encoder_class);
+  g_type_class_unref (encoder_class);
 }

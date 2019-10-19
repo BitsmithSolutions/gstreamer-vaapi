@@ -24,6 +24,7 @@
 #include "gstcompat.h"
 #include <gst/vaapi/gstvaapivalue.h>
 #include <gst/vaapi/gstvaapidisplay.h>
+#include <gst/vaapi/gstvaapiprofilecaps.h>
 #include "gstvaapiencode.h"
 #include "gstvaapipluginutil.h"
 #include "gstvaapivideometa.h"
@@ -103,32 +104,10 @@ gst_vaapiencode_src_query (GstVideoEncoder * encoder, GstQuery * query)
 
 typedef struct
 {
-  GstVaapiEncoderProp id;
+  guint id;
   GParamSpec *pspec;
   GValue value;
 } PropValue;
-
-static PropValue *
-prop_value_new (GstVaapiEncoderPropInfo * prop)
-{
-  static const GValue default_value = G_VALUE_INIT;
-  PropValue *prop_value;
-
-  if (!prop || !prop->pspec)
-    return NULL;
-
-  prop_value = g_slice_new (PropValue);
-  if (!prop_value)
-    return NULL;
-
-  prop_value->id = prop->prop;
-  prop_value->pspec = g_param_spec_ref (prop->pspec);
-
-  memcpy (&prop_value->value, &default_value, sizeof (prop_value->value));
-  g_value_init (&prop_value->value, prop->pspec->value_type);
-  g_param_value_set_default (prop->pspec, &prop_value->value);
-  return prop_value;
-}
 
 static void
 prop_value_free (PropValue * prop_value)
@@ -146,48 +125,44 @@ prop_value_free (PropValue * prop_value)
   g_slice_free (PropValue, prop_value);
 }
 
+static PropValue *
+prop_value_new_entry (guint id, GParamSpec * pspec, const GValue * value)
+{
+  PropValue *prop_value;
+
+  if (!pspec)
+    return NULL;
+
+  prop_value = g_slice_new0 (PropValue);
+  if (!prop_value)
+    return NULL;
+
+  prop_value->id = id;
+  prop_value->pspec = g_param_spec_ref (pspec);
+  g_value_init (&prop_value->value, pspec->value_type);
+
+  g_assert (g_value_type_compatible (pspec->value_type, G_VALUE_TYPE (value)));
+  g_value_copy (value, &prop_value->value);
+
+  return prop_value;
+}
+
 static inline PropValue *
-prop_value_lookup (GstVaapiEncode * encode, guint prop_id)
+prop_value_lookup_entry (GPtrArray * prop_values, guint prop_id)
 {
-  GPtrArray *const prop_values = encode->prop_values;
+  guint i;
+  PropValue *prop_value;
 
-  if (prop_values &&
-      (prop_id >= PROP_BASE && prop_id < PROP_BASE + prop_values->len))
-    return g_ptr_array_index (prop_values, prop_id - PROP_BASE);
+  if (prop_values == NULL)
+    return NULL;
+
+  for (i = 0; i < prop_values->len; i++) {
+    prop_value = g_ptr_array_index (prop_values, i);
+    if (prop_value->id == prop_id)
+      return prop_value;
+  }
+
   return NULL;
-}
-
-static gboolean
-gst_vaapiencode_default_get_property (GstVaapiEncode * encode, guint prop_id,
-    GValue * value)
-{
-  PropValue *const prop_value = prop_value_lookup (encode, prop_id);
-
-  if (prop_value) {
-    g_value_copy (&prop_value->value, value);
-    return TRUE;
-  }
-  return FALSE;
-}
-
-static gboolean
-gst_vaapiencode_default_set_property (GstVaapiEncode * encode, guint prop_id,
-    const GValue * value)
-{
-  PropValue *const prop_value = prop_value_lookup (encode, prop_id);
-  GstVaapiEncoder *encoder = encode->encoder;
-
-  if (prop_value) {
-    g_value_copy (value, &prop_value->value);
-
-    if (encoder)
-      return (gst_vaapi_encoder_set_property (encoder, prop_id,
-              value) == GST_VAAPI_ENCODER_STATUS_SUCCESS);
-
-    return TRUE;
-  }
-
-  return FALSE;
 }
 
 static GstFlowReturn
@@ -365,33 +340,68 @@ gst_vaapiencode_buffer_loop (GstVaapiEncode * encode)
   gst_pad_pause_task (GST_VAAPI_PLUGIN_BASE_SRC_PAD (encode));
 }
 
+static GstVaapiProfile
+get_profile (GstVaapiEncode * encode)
+{
+  GstVaapiEncodeClass *klass = GST_VAAPIENCODE_GET_CLASS (encode);
+
+  if (klass->get_profile) {
+    GstVaapiProfile profile = GST_VAAPI_PROFILE_UNKNOWN;
+    GstCaps *allowed =
+        gst_pad_get_allowed_caps (GST_VAAPI_PLUGIN_BASE_SRC_PAD (encode));
+
+    if (allowed) {
+      if (!gst_caps_is_empty (allowed) && !gst_caps_is_any (allowed))
+        profile = klass->get_profile (allowed);
+      gst_caps_unref (allowed);
+    }
+
+    if (profile != GST_VAAPI_PROFILE_UNKNOWN)
+      return profile;
+  }
+
+  if (encode->encoder)
+    return gst_vaapi_encoder_get_profile (encode->encoder);
+
+  return GST_VAAPI_PROFILE_UNKNOWN;
+}
+
+static GstVaapiEntrypoint
+get_entrypoint (GstVaapiEncode * encode, GstVaapiProfile profile)
+{
+  GstVaapiEncoderTune tune = GST_VAAPI_ENCODER_TUNE_NONE;
+
+  g_object_get (encode, "tune", &tune, NULL);
+  if (tune == GST_VAAPI_ENCODER_TUNE_LOW_POWER)
+    return GST_VAAPI_ENTRYPOINT_SLICE_ENCODE_LP;
+  if (profile == GST_VAAPI_PROFILE_JPEG_BASELINE)
+    return GST_VAAPI_ENTRYPOINT_PICTURE_ENCODE;
+  return GST_VAAPI_ENTRYPOINT_SLICE_ENCODE;
+}
+
 static gboolean
 ensure_allowed_sinkpad_caps (GstVaapiEncode * encode)
 {
-  GstVaapiEncodeClass *klass = GST_VAAPIENCODE_GET_CLASS (encode);
   GstCaps *out_caps, *raw_caps = NULL;
   GArray *formats = NULL;
   gboolean ret = FALSE;
-  GstVaapiProfile profile = GST_VAAPI_PROFILE_UNKNOWN;
+  GstVaapiProfile profile;
+  guint i, size;
+  GstStructure *structure;
 
   if (encode->allowed_sinkpad_caps)
     return TRUE;
   if (!encode->encoder)
     return TRUE;
 
-  out_caps = gst_caps_from_string (GST_VAAPI_MAKE_SURFACE_CAPS);
+  profile = get_profile (encode);
+  if (profile == GST_VAAPI_PROFILE_UNKNOWN)
+    return TRUE;
+
+  out_caps = gst_caps_from_string (GST_VAAPI_MAKE_SURFACE_CAPS ";"
+      GST_VAAPI_MAKE_DMABUF_CAPS);
   if (!out_caps)
     goto failed_create_va_caps;
-
-  if (klass->get_profile) {
-    GstCaps *allowed =
-        gst_pad_get_allowed_caps (GST_VAAPI_PLUGIN_BASE_SRC_PAD (encode));
-    if (allowed) {
-      if (!gst_caps_is_empty (allowed) && !gst_caps_is_any (allowed))
-        profile = klass->get_profile (allowed);
-      gst_caps_unref (allowed);
-    }
-  }
 
   formats = gst_vaapi_encoder_get_surface_formats (encode->encoder, profile);
   if (!formats)
@@ -403,6 +413,16 @@ ensure_allowed_sinkpad_caps (GstVaapiEncode * encode)
 
   out_caps = gst_caps_make_writable (out_caps);
   gst_caps_append (out_caps, gst_caps_copy (raw_caps));
+
+  size = gst_caps_get_size (out_caps);
+  for (i = 0; i < size; i++) {
+    structure = gst_caps_get_structure (out_caps, i);
+    if (!structure)
+      continue;
+    gst_vaapi_profile_caps_append_encoder (GST_VAAPI_PLUGIN_BASE_DISPLAY
+        (encode), profile, get_entrypoint (encode, profile), structure);
+  }
+
   gst_caps_replace (&encode->allowed_sinkpad_caps, out_caps);
   GST_INFO_OBJECT (encode, "Allowed sink caps %" GST_PTR_FORMAT,
       encode->allowed_sinkpad_caps);
@@ -491,8 +511,6 @@ static gboolean
 ensure_encoder (GstVaapiEncode * encode)
 {
   GstVaapiEncodeClass *klass = GST_VAAPIENCODE_GET_CLASS (encode);
-  GstVaapiEncoderStatus status;
-  GPtrArray *const prop_values = encode->prop_values;
   guint i;
 
   g_return_val_if_fail (klass->alloc_encoder, FALSE);
@@ -505,15 +523,17 @@ ensure_encoder (GstVaapiEncode * encode)
   if (!encode->encoder)
     return FALSE;
 
-  if (prop_values) {
-    for (i = 0; i < prop_values->len; i++) {
-      PropValue *const prop_value = g_ptr_array_index (prop_values, i);
-      status = gst_vaapi_encoder_set_property (encode->encoder, prop_value->id,
-          &prop_value->value);
-      if (status != GST_VAAPI_ENCODER_STATUS_SUCCESS)
-        return FALSE;
+  if (encode->prop_values && encode->prop_values->len) {
+    for (i = 0; i < encode->prop_values->len; i++) {
+      PropValue *const prop_value = g_ptr_array_index (encode->prop_values, i);
+      g_object_set_property ((GObject *) encode->encoder,
+          g_param_spec_get_name (prop_value->pspec), &prop_value->value);
     }
+    /* clear alll the cache */
+    g_ptr_array_unref (encode->prop_values);
+    encode->prop_values = NULL;
   }
+
   return TRUE;
 }
 
@@ -591,7 +611,6 @@ static gboolean
 gst_vaapiencode_set_format (GstVideoEncoder * venc, GstVideoCodecState * state)
 {
   GstVaapiEncode *const encode = GST_VAAPIENCODE_CAST (venc);
-  gboolean ret;
 
   g_return_val_if_fail (state->caps != NULL, FALSE);
 
@@ -609,12 +628,6 @@ gst_vaapiencode_set_format (GstVideoEncoder * venc, GstVideoCodecState * state)
     gst_video_codec_state_unref (encode->input_state);
   encode->input_state = gst_video_codec_state_ref (state);
   encode->input_state_changed = TRUE;
-
-  ret = gst_pad_start_task (GST_VAAPI_PLUGIN_BASE_SRC_PAD (encode),
-      (GstTaskFunction) gst_vaapiencode_buffer_loop, encode, NULL);
-
-  if (!ret)
-    return FALSE;
 
   /* Store some tags */
   {
@@ -650,15 +663,23 @@ gst_vaapiencode_handle_frame (GstVideoEncoder * venc,
     GstVideoCodecFrame * frame)
 {
   GstVaapiEncode *const encode = GST_VAAPIENCODE_CAST (venc);
+  GstPad *const srcpad = GST_VAAPI_PLUGIN_BASE_SRC_PAD (encode);
   GstVaapiEncoderStatus status;
   GstVaapiVideoMeta *meta;
   GstVaapiSurfaceProxy *proxy;
   GstFlowReturn ret;
   GstBuffer *buf;
+  GstTaskState task_state;
 #if USE_H264_FEI_ENCODER
   GstVaapiFeiVideoMeta *feimeta = NULL;
   GstVaapiEncodeClass *const klass = GST_VAAPIENCODE_GET_CLASS (venc);
 #endif
+
+  task_state = gst_pad_get_task_state (srcpad);
+  if (task_state == GST_TASK_STOPPED || task_state == GST_TASK_PAUSED)
+    if (!gst_pad_start_task (srcpad,
+            (GstTaskFunction) gst_vaapiencode_buffer_loop, encode, NULL))
+      goto error_task_failed;
 
   buf = NULL;
   ret = gst_vaapi_plugin_base_get_input_buffer (GST_VAAPI_PLUGIN_BASE (encode),
@@ -697,6 +718,13 @@ gst_vaapiencode_handle_frame (GstVideoEncoder * venc,
   return GST_FLOW_OK;
 
   /* ERRORS */
+error_task_failed:
+  {
+    GST_ELEMENT_ERROR (venc, RESOURCE, FAILED,
+        ("Failed to start encoding thread."), (NULL));
+    gst_video_codec_frame_unref (frame);
+    return GST_FLOW_ERROR;
+  }
 error_buffer_invalid:
   {
     if (buf)
@@ -761,6 +789,9 @@ gst_vaapiencode_change_state (GstElement * element, GstStateChange transition)
   switch (transition) {
     case GST_STATE_CHANGE_PAUSED_TO_READY:
       gst_pad_stop_task (GST_VAAPI_PLUGIN_BASE_SRC_PAD (encode));
+
+      if (!gst_vaapiencode_drain (encode))
+        goto drain_error;
       break;
     default:
       break;
@@ -768,6 +799,12 @@ gst_vaapiencode_change_state (GstElement * element, GstStateChange transition)
   return
       GST_ELEMENT_CLASS (gst_vaapiencode_parent_class)->change_state (element,
       transition);
+
+drain_error:
+  {
+    GST_ERROR ("failed to drain pending encoded frames");
+    return GST_STATE_CHANGE_FAILURE;
+  }
 }
 
 static gboolean
@@ -885,62 +922,162 @@ gst_vaapiencode_class_init (GstVaapiEncodeClass * klass)
   venc_class->flush = GST_DEBUG_FUNCPTR (gst_vaapiencode_flush);
   venc_class->sink_event = GST_DEBUG_FUNCPTR (gst_vaapiencode_sink_event);
 
-  klass->get_property = gst_vaapiencode_default_get_property;
-  klass->set_property = gst_vaapiencode_default_set_property;
   klass->alloc_buffer = gst_vaapiencode_default_alloc_buffer;
 
   venc_class->src_query = GST_DEBUG_FUNCPTR (gst_vaapiencode_src_query);
   venc_class->sink_query = GST_DEBUG_FUNCPTR (gst_vaapiencode_sink_query);
 }
 
-static inline GPtrArray *
-get_properties (GstVaapiEncodeClass * klass)
+/* Only used by the drived class */
+void
+gst_vaapiencode_set_property_subclass (GObject * object,
+    guint prop_id, const GValue * value, GParamSpec * pspec)
 {
-  return klass->get_properties ? klass->get_properties () : NULL;
-}
+  GstVaapiEncodeClass *const encode_class = GST_VAAPIENCODE_GET_CLASS (object);
+  GstVaapiEncode *const encode = GST_VAAPIENCODE_CAST (object);
+  PropValue *prop_value;
 
-gboolean
-gst_vaapiencode_init_properties (GstVaapiEncode * encode)
-{
-  GPtrArray *const props = get_properties (GST_VAAPIENCODE_GET_CLASS (encode));
-  guint i;
-
-  /* XXX: use base_init()/base_finalize() to avoid multiple initializations */
-  if (!props)
-    return FALSE;
-
-  encode->prop_values =
-      g_ptr_array_new_full (props->len, (GDestroyNotify) prop_value_free);
-  if (!encode->prop_values) {
-    g_ptr_array_unref (props);
-    return FALSE;
+  if (prop_id <= PROP_BASE || prop_id >= encode_class->prop_num) {
+    G_OBJECT_WARN_INVALID_PROPERTY_ID (object, prop_id, pspec);
+    return;
   }
 
-  for (i = 0; i < props->len; i++) {
-    PropValue *const prop_value = prop_value_new ((GstVaapiEncoderPropInfo *)
-        g_ptr_array_index (props, i));
-    if (!prop_value)
-      return FALSE;
-    g_ptr_array_add (encode->prop_values, prop_value);
+  /* direct forward the property to encoder */
+  if (encode->encoder) {
+    g_object_set_property ((GObject *) encode->encoder,
+        g_param_spec_get_name (pspec), value);
+    return;
   }
-  g_ptr_array_unref (props);
-  return TRUE;
+
+  if (encode->prop_values) {
+    /* Delete the same prop already in cache */
+    prop_value = prop_value_lookup_entry (encode->prop_values, prop_id);
+    if (prop_value)
+      g_ptr_array_remove (encode->prop_values, prop_value);
+  } else {
+    encode->prop_values =
+        g_ptr_array_new_with_free_func ((GDestroyNotify) prop_value_free);
+  }
+
+  /* The encoder is delay created, we need to cache the property setting */
+  prop_value = prop_value_new_entry (prop_id, pspec, value);
+  g_ptr_array_add (encode->prop_values, prop_value);
 }
 
+/* Only used by the drived class */
+void
+gst_vaapiencode_get_property_subclass (GObject * object, guint prop_id,
+    GValue * value, GParamSpec * pspec)
+{
+  GstVaapiEncodeClass *const encode_class = GST_VAAPIENCODE_GET_CLASS (object);
+  GstVaapiEncode *const encode = GST_VAAPIENCODE_CAST (object);
+  PropValue *prop_value = NULL;
+
+  if (prop_id <= PROP_BASE || prop_id >= encode_class->prop_num) {
+    G_OBJECT_WARN_INVALID_PROPERTY_ID (object, prop_id, pspec);
+    return;
+  }
+
+  /* direct forward the property to encoder */
+  if (encode->encoder) {
+    g_object_get_property ((GObject *) encode->encoder,
+        g_param_spec_get_name (pspec), value);
+    return;
+  }
+
+  if (encode->prop_values)
+    prop_value = prop_value_lookup_entry (encode->prop_values, prop_id);
+
+  if (prop_value) {
+    /* In the cache */
+    g_value_copy (&prop_value->value, value);
+  } else {
+    /* set the default value */
+    g_param_value_set_default (pspec, value);
+  }
+}
+
+/* Called by drived class to install all properties. The encode base class
+   does not have any property, all the properties of the according encoderXXX
+   class are installed to encodeXXX class. */
 gboolean
-gst_vaapiencode_class_init_properties (GstVaapiEncodeClass * klass)
+gst_vaapiencode_class_install_properties (GstVaapiEncodeClass * klass,
+    GObjectClass * encoder_class)
 {
   GObjectClass *const object_class = G_OBJECT_CLASS (klass);
-  GPtrArray *const props = get_properties (klass);
-  guint i;
+  guint i, n_props, installed;
+  GParamSpec **specs = NULL;
+  GParamSpec *pspec;
+  GParamSpec *new_spec;
+  GParamFlags flags;
 
-  if (!props)
+  if (encoder_class)
+    specs = g_object_class_list_properties (encoder_class, &n_props);
+  if (!specs)
     return FALSE;
 
-  for (i = 0; i < props->len; i++) {
-    GstVaapiEncoderPropInfo *const prop = g_ptr_array_index (props, i);
-    g_object_class_install_property (object_class, PROP_BASE + i, prop->pspec);
+  installed = 0;
+  for (i = 0; i < n_props; i++) {
+    pspec = specs[i];
+
+    /* Encoder do not want to expose */
+    if (!(pspec->flags & GST_VAAPI_PARAM_ENCODER_EXPOSURE))
+      continue;
+    /* Can only set on encoder init time */
+    if (pspec->flags & G_PARAM_CONSTRUCT_ONLY)
+      continue;
+
+    /* filter out the G_PARAM_CONSTRUCT, the encoder created later, no need
+       to set the init value in encode.
+       Also no GST_VAAPI_PARAM_ENCODER_EXPOSURE */
+    flags = pspec->flags & (~(GST_VAAPI_PARAM_ENCODER_EXPOSURE |
+            G_PARAM_CONSTRUCT));
+
+    if (G_PARAM_SPEC_TYPE (pspec) == G_TYPE_PARAM_UINT) {
+      GParamSpecUInt *pspecuint = G_PARAM_SPEC_UINT (pspec);
+      new_spec = g_param_spec_uint (g_param_spec_get_name (pspec),
+          g_param_spec_get_nick (pspec), g_param_spec_get_blurb (pspec),
+          pspecuint->minimum, pspecuint->maximum,
+          pspecuint->default_value, flags);
+    } else if (G_PARAM_SPEC_TYPE (pspec) == G_TYPE_PARAM_INT) {
+      GParamSpecInt *pspecint = G_PARAM_SPEC_INT (pspec);
+      new_spec = g_param_spec_int (g_param_spec_get_name (pspec),
+          g_param_spec_get_nick (pspec), g_param_spec_get_blurb (pspec),
+          pspecint->minimum, pspecint->maximum, pspecint->default_value, flags);
+    } else if (G_IS_PARAM_SPEC_ENUM (pspec)) {
+      GParamSpecEnum *pspecenum = G_PARAM_SPEC_ENUM (pspec);
+      new_spec = g_param_spec_enum (g_param_spec_get_name (pspec),
+          g_param_spec_get_nick (pspec),
+          g_param_spec_get_blurb (pspec),
+          pspec->value_type, pspecenum->default_value, flags);
+    } else if (G_IS_PARAM_SPEC_BOOLEAN (pspec)) {
+      GParamSpecBoolean *pspecbool = G_PARAM_SPEC_BOOLEAN (pspec);
+      new_spec = g_param_spec_boolean (g_param_spec_get_name (pspec),
+          g_param_spec_get_nick (pspec), g_param_spec_get_blurb (pspec),
+          pspecbool->default_value, flags);
+    } else if (G_IS_PARAM_SPEC_FLAGS (pspec)) {
+      GParamSpecFlags *pspecflags = G_PARAM_SPEC_FLAGS (pspec);
+      new_spec = g_param_spec_flags (g_param_spec_get_name (pspec),
+          g_param_spec_get_nick (pspec), g_param_spec_get_blurb (pspec),
+          pspec->value_type, pspecflags->default_value, flags);
+    } else if (GST_IS_PARAM_SPEC_ARRAY_LIST (pspec)) {
+      GstParamSpecArray *pspecarray = GST_PARAM_SPEC_ARRAY_LIST (pspec);
+      new_spec = gst_param_spec_array (g_param_spec_get_name (pspec),
+          g_param_spec_get_nick (pspec), g_param_spec_get_blurb (pspec),
+          pspecarray->element_spec, flags);
+    } else {
+      GST_WARNING ("encoder's %s property has a unimplemented"
+          " type to expose to encode, the encode may lose the %s property",
+          g_param_spec_get_name (pspec), g_param_spec_get_name (pspec));
+      continue;
+    }
+
+    g_object_class_install_property (object_class, PROP_BASE + 1 + installed,
+        new_spec);
+    installed++;
   }
-  g_ptr_array_unref (props);
+
+  g_free (specs);
+  klass->prop_num = PROP_BASE + 1 + installed;
   return TRUE;
 }

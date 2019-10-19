@@ -43,7 +43,8 @@
 
 /* Supported set of tuning options, within this implementation */
 #define SUPPORTED_TUNE_OPTIONS \
-  (GST_VAAPI_ENCODER_TUNE_MASK (NONE))
+  (GST_VAAPI_ENCODER_TUNE_MASK (NONE) |           \
+   GST_VAAPI_ENCODER_TUNE_MASK (LOW_POWER))
 
 /* Supported set of VA packed headers, within this implementation */
 #define SUPPORTED_PACKED_HEADERS                \
@@ -102,6 +103,7 @@ struct _GstVaapiEncoderVP9
   guint frame_num;
   GstVaapiSurfaceProxy *ref_list[GST_VP9_REF_FRAMES];   /* reference list */
   guint ref_list_idx;           /* next free slot in ref_list */
+  GstVaapiEntrypoint entrypoint;
 
   /* Bitrate contral parameters, CPB = Coded Picture Buffer */
   guint bitrate_bits;           /* bitrate (bits) */
@@ -147,8 +149,18 @@ ensure_bitrate (GstVaapiEncoderVP9 * encoder)
 static GstVaapiEncoderStatus
 ensure_profile (GstVaapiEncoderVP9 * encoder)
 {
-  /* Always start from "simple" profile for maximum compatibility */
-  encoder->profile = GST_VAAPI_PROFILE_VP9_0;
+  /*
+     Profile Color | Depth Chroma | Subsampling
+     0             | 8 bit/sample | 4:2:0
+     1             | 8 bit        | 4:2:2, 4:4:4
+     2             | 10 or 12 bit | 4:2:0
+     3             | 10 or 12 bit | 4:2:2, 4:4:4     */
+  const GstVideoFormat format =
+      GST_VIDEO_INFO_FORMAT (GST_VAAPI_ENCODER_VIDEO_INFO (encoder));
+  if (format == GST_VIDEO_FORMAT_P010_10LE)
+    encoder->profile = GST_VAAPI_PROFILE_VP9_2;
+  else
+    encoder->profile = GST_VAAPI_PROFILE_VP9_0;
 
   /* Ensure bitrate if not set already */
   ensure_bitrate (encoder);
@@ -161,7 +173,7 @@ static gboolean
 ensure_hw_profile (GstVaapiEncoderVP9 * encoder)
 {
   GstVaapiDisplay *const display = GST_VAAPI_ENCODER_DISPLAY (encoder);
-  GstVaapiEntrypoint entrypoint = GST_VAAPI_ENTRYPOINT_SLICE_ENCODE;
+  GstVaapiEntrypoint entrypoint = encoder->entrypoint;
   GstVaapiProfile profile, profiles[2];
   guint i, num_profiles = 0;
 
@@ -184,7 +196,7 @@ ensure_hw_profile (GstVaapiEncoderVP9 * encoder)
 error_unsupported_profile:
   {
     GST_ERROR ("unsupported HW profile %s",
-        gst_vaapi_profile_get_name (encoder->profile));
+        gst_vaapi_profile_get_va_name (encoder->profile));
     return FALSE;
   }
 }
@@ -206,6 +218,8 @@ set_context_info (GstVaapiEncoder * base_encoder)
   /* Only YUV 4:2:0 formats are supported for now. */
   base_encoder->codedbuf_size = GST_ROUND_UP_16 (vip->width) *
       GST_ROUND_UP_16 (vip->height) * 3 / 2;
+
+  base_encoder->context_info.entrypoint = encoder->entrypoint;
 
   return GST_VAAPI_ENCODER_STATUS_SUCCESS;
 }
@@ -413,8 +427,8 @@ update_ref_list (GstVaapiEncoderVP9 * encoder, GstVaapiEncPicture * picture,
       gst_vaapi_surface_proxy_unref (ref);
       break;
     case GST_VAAPI_ENCODER_VP9_REF_PIC_MODE_1:
-      gst_vaapi_surface_proxy_replace (&encoder->
-          ref_list[encoder->ref_list_idx], ref);
+      gst_vaapi_surface_proxy_replace (&encoder->ref_list[encoder->
+              ref_list_idx], ref);
       gst_vaapi_surface_proxy_unref (ref);
       encoder->ref_list_idx = (encoder->ref_list_idx + 1) % GST_VP9_REF_FRAMES;
       break;
@@ -462,6 +476,10 @@ error:
 static GstVaapiEncoderStatus
 gst_vaapi_encoder_vp9_flush (GstVaapiEncoder * base_encoder)
 {
+  GstVaapiEncoderVP9 *const encoder = GST_VAAPI_ENCODER_VP9 (base_encoder);
+
+  encoder->frame_num = 0;
+
   return GST_VAAPI_ENCODER_STATUS_SUCCESS;
 }
 
@@ -508,71 +526,219 @@ gst_vaapi_encoder_vp9_reconfigure (GstVaapiEncoder * base_encoder)
   if (status != GST_VAAPI_ENCODER_STATUS_SUCCESS)
     return status;
 
+  if (GST_VAAPI_ENCODER_TUNE (encoder) == GST_VAAPI_ENCODER_TUNE_LOW_POWER)
+    encoder->entrypoint = GST_VAAPI_ENTRYPOINT_SLICE_ENCODE_LP;
   ensure_control_rate_params (encoder);
   return set_context_info (base_encoder);
 }
 
-static gboolean
-gst_vaapi_encoder_vp9_init (GstVaapiEncoder * base_encoder)
-{
-  GstVaapiEncoderVP9 *const encoder = GST_VAAPI_ENCODER_VP9 (base_encoder);
 
+struct _GstVaapiEncoderVP9Class
+{
+  GstVaapiEncoderClass parent_class;
+};
+
+G_DEFINE_TYPE (GstVaapiEncoderVP9, gst_vaapi_encoder_vp9,
+    GST_TYPE_VAAPI_ENCODER);
+
+static void
+gst_vaapi_encoder_vp9_init (GstVaapiEncoderVP9 * encoder)
+{
   encoder->frame_num = 0;
   encoder->loop_filter_level = DEFAULT_LOOP_FILTER_LEVEL;
   encoder->sharpness_level = DEFAULT_SHARPNESS_LEVEL;
   encoder->yac_qi = DEFAULT_YAC_QINDEX;
   encoder->cpb_length = DEFAULT_CPB_LENGTH;
+  encoder->entrypoint = GST_VAAPI_ENTRYPOINT_SLICE_ENCODE;
 
   memset (encoder->ref_list, 0,
       G_N_ELEMENTS (encoder->ref_list) * sizeof (encoder->ref_list[0]));
   encoder->ref_list_idx = 0;
-
-  return TRUE;
 }
+
+/**
+ * @ENCODER_VP9_PROP_RATECONTROL: Rate control (#GstVaapiRateControl).
+ * @ENCODER_VP9_PROP_TUNE: The tuning options (#GstVaapiEncoderTune).
+ * @ENCODER_VP9_PROP_LOOP_FILTER_LEVEL: Loop Filter Level(uint).
+ * @ENCODER_VP9_PROP_LOOP_SHARPNESS_LEVEL: Sharpness Level(uint).
+ * @ENCODER_VP9_PROP_YAC_Q_INDEX: Quantization table index for luma AC
+ * @ENCODER_VP9_PROP_REF_PIC_MODE: Reference picute selection modes
+ * @ENCODER_VP9_PROP_CPB_LENGTH:Length of CPB buffer in milliseconds
+ *
+ * The set of VP9 encoder specific configurable properties.
+ */
+enum
+{
+  ENCODER_VP9_PROP_RATECONTROL = 1,
+  ENCODER_VP9_PROP_TUNE,
+  ENCODER_VP9_PROP_LOOP_FILTER_LEVEL,
+  ENCODER_VP9_PROP_SHARPNESS_LEVEL,
+  ENCODER_VP9_PROP_YAC_Q_INDEX,
+  ENCODER_VP9_PROP_REF_PIC_MODE,
+  ENCODER_VP9_PROP_CPB_LENGTH,
+  ENCODER_VP9_N_PROPERTIES
+};
+
+static GParamSpec *properties[ENCODER_VP9_N_PROPERTIES];
 
 static void
-gst_vaapi_encoder_vp9_finalize (GstVaapiEncoder * base_encoder)
+gst_vaapi_encoder_vp9_set_property (GObject * object, guint prop_id,
+    const GValue * value, GParamSpec * pspec)
 {
-}
+  GstVaapiEncoder *const base_encoder = GST_VAAPI_ENCODER (object);
+  GstVaapiEncoderVP9 *const encoder = GST_VAAPI_ENCODER_VP9 (object);
 
-static GstVaapiEncoderStatus
-gst_vaapi_encoder_vp9_set_property (GstVaapiEncoder * base_encoder,
-    gint prop_id, const GValue * value)
-{
-  GstVaapiEncoderVP9 *const encoder = GST_VAAPI_ENCODER_VP9 (base_encoder);
+  if (base_encoder->num_codedbuf_queued > 0) {
+    GST_ERROR_OBJECT (object,
+        "failed to set any property after encoding started");
+    return;
+  }
 
   switch (prop_id) {
-    case GST_VAAPI_ENCODER_VP9_PROP_LOOP_FILTER_LEVEL:
+    case ENCODER_VP9_PROP_RATECONTROL:
+      gst_vaapi_encoder_set_rate_control (base_encoder,
+          g_value_get_enum (value));
+      break;
+    case ENCODER_VP9_PROP_TUNE:
+      gst_vaapi_encoder_set_tuning (base_encoder, g_value_get_enum (value));
+      break;
+    case ENCODER_VP9_PROP_LOOP_FILTER_LEVEL:
       encoder->loop_filter_level = g_value_get_uint (value);
       break;
-    case GST_VAAPI_ENCODER_VP9_PROP_SHARPNESS_LEVEL:
+    case ENCODER_VP9_PROP_SHARPNESS_LEVEL:
       encoder->sharpness_level = g_value_get_uint (value);
       break;
-    case GST_VAAPI_ENCODER_VP9_PROP_YAC_Q_INDEX:
+    case ENCODER_VP9_PROP_YAC_Q_INDEX:
       encoder->yac_qi = g_value_get_uint (value);
       break;
-    case GST_VAAPI_ENCODER_VP9_PROP_REF_PIC_MODE:
+    case ENCODER_VP9_PROP_REF_PIC_MODE:
       encoder->ref_pic_mode = g_value_get_enum (value);
       break;
-    case GST_VAAPI_ENCODER_VP9_PROP_CPB_LENGTH:
+    case ENCODER_VP9_PROP_CPB_LENGTH:
       encoder->cpb_length = g_value_get_uint (value);
       break;
     default:
-      return GST_VAAPI_ENCODER_STATUS_ERROR_INVALID_PARAMETER;
+      G_OBJECT_WARN_INVALID_PROPERTY_ID (object, prop_id, pspec);
   }
-  return GST_VAAPI_ENCODER_STATUS_SUCCESS;
+}
+
+static void
+gst_vaapi_encoder_vp9_get_property (GObject * object, guint prop_id,
+    GValue * value, GParamSpec * pspec)
+{
+  GstVaapiEncoderVP9 *const encoder = GST_VAAPI_ENCODER_VP9 (object);
+  GstVaapiEncoder *const base_encoder = GST_VAAPI_ENCODER (object);
+
+  switch (prop_id) {
+    case ENCODER_VP9_PROP_RATECONTROL:
+      g_value_set_enum (value, base_encoder->rate_control);
+      break;
+    case ENCODER_VP9_PROP_TUNE:
+      g_value_set_enum (value, base_encoder->tune);
+      break;
+    case ENCODER_VP9_PROP_LOOP_FILTER_LEVEL:
+      g_value_set_uint (value, encoder->loop_filter_level);
+      break;
+    case ENCODER_VP9_PROP_SHARPNESS_LEVEL:
+      g_value_set_uint (value, encoder->sharpness_level);
+      break;
+    case ENCODER_VP9_PROP_YAC_Q_INDEX:
+      g_value_set_uint (value, encoder->yac_qi);
+      break;
+    case ENCODER_VP9_PROP_REF_PIC_MODE:
+      g_value_set_enum (value, encoder->ref_pic_mode);
+      break;
+    case ENCODER_VP9_PROP_CPB_LENGTH:
+      g_value_set_uint (value, encoder->cpb_length);
+      break;
+    default:
+      G_OBJECT_WARN_INVALID_PROPERTY_ID (object, prop_id, pspec);
+  }
 }
 
 GST_VAAPI_ENCODER_DEFINE_CLASS_DATA (VP9);
 
-static inline const GstVaapiEncoderClass *
-gst_vaapi_encoder_vp9_class (void)
+static void
+gst_vaapi_encoder_vp9_class_init (GstVaapiEncoderVP9Class * klass)
 {
-  static const GstVaapiEncoderClass GstVaapiEncoderVP9Class = {
-    GST_VAAPI_ENCODER_CLASS_INIT (VP9, vp9),
-    .set_property = gst_vaapi_encoder_vp9_set_property,
-  };
-  return &GstVaapiEncoderVP9Class;
+  GObjectClass *const object_class = G_OBJECT_CLASS (klass);
+  GstVaapiEncoderClass *const encoder_class = GST_VAAPI_ENCODER_CLASS (klass);
+
+  encoder_class->class_data = &g_class_data;
+  encoder_class->reconfigure = gst_vaapi_encoder_vp9_reconfigure;
+  encoder_class->reordering = gst_vaapi_encoder_vp9_reordering;
+  encoder_class->encode = gst_vaapi_encoder_vp9_encode;
+  encoder_class->flush = gst_vaapi_encoder_vp9_flush;
+
+  object_class->set_property = gst_vaapi_encoder_vp9_set_property;
+  object_class->get_property = gst_vaapi_encoder_vp9_get_property;
+
+  properties[ENCODER_VP9_PROP_RATECONTROL] =
+      g_param_spec_enum ("rate-control",
+      "Rate Control", "Rate control mode",
+      g_class_data.rate_control_get_type (),
+      g_class_data.default_rate_control,
+      G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS | G_PARAM_CONSTRUCT |
+      GST_VAAPI_PARAM_ENCODER_EXPOSURE);
+
+  properties[ENCODER_VP9_PROP_TUNE] =
+      g_param_spec_enum ("tune",
+      "Encoder Tuning",
+      "Encoder tuning option",
+      g_class_data.encoder_tune_get_type (),
+      g_class_data.default_encoder_tune,
+      G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS | G_PARAM_CONSTRUCT |
+      GST_VAAPI_PARAM_ENCODER_EXPOSURE);
+
+  properties[ENCODER_VP9_PROP_LOOP_FILTER_LEVEL] =
+      g_param_spec_uint ("loop-filter-level",
+      "Loop Filter Level",
+      "Controls the deblocking filter strength",
+      0, 63, DEFAULT_LOOP_FILTER_LEVEL,
+      G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS | G_PARAM_CONSTRUCT |
+      GST_VAAPI_PARAM_ENCODER_EXPOSURE);
+
+  properties[ENCODER_VP9_PROP_SHARPNESS_LEVEL] =
+      g_param_spec_uint ("sharpness-level",
+      "Sharpness Level",
+      "Controls the deblocking filter sensitivity",
+      0, 7, DEFAULT_SHARPNESS_LEVEL,
+      G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS | G_PARAM_CONSTRUCT |
+      GST_VAAPI_PARAM_ENCODER_EXPOSURE);
+
+  properties[ENCODER_VP9_PROP_YAC_Q_INDEX] =
+      g_param_spec_uint ("yac-qi",
+      "Luma AC Quant Table index",
+      "Quantization Table index for Luma AC Coefficients",
+      0, 255, DEFAULT_YAC_QINDEX,
+      G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS | G_PARAM_CONSTRUCT |
+      GST_VAAPI_PARAM_ENCODER_EXPOSURE);
+
+  properties[ENCODER_VP9_PROP_REF_PIC_MODE] =
+      g_param_spec_enum ("ref-pic-mode",
+      "RefPic Selection",
+      "Reference Picture Selection Modes",
+      gst_vaapi_encoder_vp9_ref_pic_mode_type (),
+      GST_VAAPI_ENCODER_VP9_REF_PIC_MODE_0,
+      G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS | G_PARAM_CONSTRUCT |
+      GST_VAAPI_PARAM_ENCODER_EXPOSURE);
+
+  /**
+   * GstVaapiEncoderVP9:cpb-length:
+   *
+   * The size of the Coded Picture Buffer , which means
+   * the window size in milliseconds.
+   *
+   */
+  properties[ENCODER_VP9_PROP_CPB_LENGTH] =
+      g_param_spec_uint ("cpb-length",
+      "CPB Length", "Length of the CPB_buffer/window_size in milliseconds",
+      1, 10000, DEFAULT_CPB_LENGTH,
+      G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS | G_PARAM_CONSTRUCT |
+      GST_VAAPI_PARAM_ENCODER_EXPOSURE);
+
+  g_object_class_install_properties (object_class, ENCODER_VP9_N_PROPERTIES,
+      properties);
 }
 
 /**
@@ -586,76 +752,5 @@ gst_vaapi_encoder_vp9_class (void)
 GstVaapiEncoder *
 gst_vaapi_encoder_vp9_new (GstVaapiDisplay * display)
 {
-  return gst_vaapi_encoder_new (gst_vaapi_encoder_vp9_class (), display);
-}
-
-/**
- * gst_vaapi_encoder_vp9_get_default_properties:
- *
- * Determines the set of common and vp9 specific encoder properties.
- * The caller owns an extra reference to the resulting array of
- * #GstVaapiEncoderPropInfo elements, so it shall be released with
- * g_ptr_array_unref() after usage.
- *
- * Return value: the set of encoder properties for #GstVaapiEncoderVP9,
- *   or %NULL if an error occurred.
- */
-GPtrArray *
-gst_vaapi_encoder_vp9_get_default_properties (void)
-{
-  const GstVaapiEncoderClass *const klass = gst_vaapi_encoder_vp9_class ();
-  GPtrArray *props;
-
-  props = gst_vaapi_encoder_properties_get_default (klass);
-  if (!props)
-    return NULL;
-
-  GST_VAAPI_ENCODER_PROPERTIES_APPEND (props,
-      GST_VAAPI_ENCODER_VP9_PROP_LOOP_FILTER_LEVEL,
-      g_param_spec_uint ("loop-filter-level",
-          "Loop Filter Level",
-          "Controls the deblocking filter strength",
-          0, 63, DEFAULT_LOOP_FILTER_LEVEL,
-          G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS));
-
-  GST_VAAPI_ENCODER_PROPERTIES_APPEND (props,
-      GST_VAAPI_ENCODER_VP9_PROP_SHARPNESS_LEVEL,
-      g_param_spec_uint ("sharpness-level",
-          "Sharpness Level",
-          "Controls the deblocking filter sensitivity",
-          0, 7, DEFAULT_SHARPNESS_LEVEL,
-          G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS));
-
-  GST_VAAPI_ENCODER_PROPERTIES_APPEND (props,
-      GST_VAAPI_ENCODER_VP9_PROP_YAC_Q_INDEX,
-      g_param_spec_uint ("yac-qi",
-          "Luma AC Quant Table index",
-          "Quantization Table index for Luma AC Coefficients",
-          0, 255, DEFAULT_YAC_QINDEX,
-          G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS));
-
-  GST_VAAPI_ENCODER_PROPERTIES_APPEND (props,
-      GST_VAAPI_ENCODER_VP9_PROP_REF_PIC_MODE,
-      g_param_spec_enum ("ref-pic-mode",
-          "RefPic Selection",
-          "Reference Picture Selection Modes",
-          gst_vaapi_encoder_vp9_ref_pic_mode_type (),
-          GST_VAAPI_ENCODER_VP9_REF_PIC_MODE_0,
-          G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS));
-
-  /**
-   * GstVaapiEncoderVP9:cpb-length:
-   *
-   * The size of the Coded Picture Buffer , which means
-   * the window size in milliseconds.
-   *
-   */
-  GST_VAAPI_ENCODER_PROPERTIES_APPEND (props,
-      GST_VAAPI_ENCODER_VP9_PROP_CPB_LENGTH,
-      g_param_spec_uint ("cpb-length",
-          "CPB Length", "Length of the CPB_buffer/window_size in milliseconds",
-          1, 10000, DEFAULT_CPB_LENGTH,
-          G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS));
-
-  return props;
+  return g_object_new (GST_TYPE_VAAPI_ENCODER_VP9, "display", display, NULL);
 }

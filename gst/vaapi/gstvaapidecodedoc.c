@@ -25,9 +25,8 @@
  * @short_description: A VA-API based JPEG image decoder
  *
  * vaapijpegdec decodes a JPEG image to surfaces suitable for the
- * vaapisink or vaapipostproc elements using the installed <ulink
- * url="https://wiki.freedesktop.org/www/Software/vaapi/">VA-API</ulink>
- * back-end.
+ * vaapisink or vaapipostproc elements using the installed
+ * [VA-API](https://wiki.freedesktop.org/www/Software/vaapi/) back-end.
  *
  * In the case of OpenGL based elements, the buffers have the
  * #GstVideoGLTextureUploadMeta meta, which efficiently copies the
@@ -37,12 +36,11 @@
  * processed by other elements, but the performance would be rather
  * bad.
  *
- * <refsect2>
- * <title>Example launch line</title>
+ * ## Example launch line
+ *
  * |[
  * gst-launch-1.0 filesrc location=~/image.jpeg ! jpegparse ! vaapijpegdec ! imagefreeze ! vaapisink
  * ]|
- * </refsect2>
  */
 
 /**
@@ -51,9 +49,7 @@
  *
  * vaapimpeg2dec decodes from MPEG2 bitstreams to surfaces suitable
  * for the vaapisink or vaapipostproc elements using the installed
- * <ulink
- * url="https://wiki.freedesktop.org/www/Software/vaapi/">VA-API</ulink>
- * back-end.
+ * [VA-API](https://wiki.freedesktop.org/www/Software/vaapi/) back-end.
  *
  * In the case of OpenGL based elements, the buffers have the
  * #GstVideoGLTextureUploadMeta meta, which efficiently copies the
@@ -63,12 +59,11 @@
  * processed by other elements, but the performance would be rather
  * bad.
  *
- * <refsect2>
- * <title>Example launch line</title>
+ * ## Example launch line
+ *
  * |[
  * gst-launch-1.0 filesrc location=~/sample.mpg ! mpegpsdemux ! vaapimpeg2dec ! vaapisink
  * ]|
- * </refsect2>
  */
 
 /**
@@ -77,9 +72,7 @@
  *
  * vaapimpeg4dec decodes from MPEG4 bitstreams to surfaces suitable
  * for the vaapisink or vaapipostproc elements using the installed
- * <ulink
- * url="https://wiki.freedesktop.org/www/Software/vaapi/">VA-API</ulink>
- * back-end.
+ * [VA-API](https://wiki.freedesktop.org/www/Software/vaapi/) back-end.
  *
  * In the case of OpenGL based elements, the buffers have the
  * #GstVideoGLTextureUploadMeta meta, which efficiently copies the
@@ -89,12 +82,11 @@
  * processed by other elements, but the performance would be rather
  * bad.
  *
- * <refsect2>
- * <title>Example launch line</title>
+ * ## Example launch line
+ *
  * |[
  * gst-launch-1.0 filesrc location=~/sample.mpeg4 ! mpeg4videoparse ! vaapimpeg4dec ! vaapisink
  * ]|
- * </refsect2>
  */
 
 /**
@@ -103,9 +95,7 @@
  *
  * vaapih263dec decodes from H263 bitstreams to surfaces suitable
  * for the vaapisink or vaapipostproc elements using the installed
- * <ulink
- * url="https://wiki.freedesktop.org/www/Software/vaapi/">VA-API</ulink>
- * back-end.
+ * [VA-API](https://wiki.freedesktop.org/www/Software/vaapi/) back-end.
  *
  * In the case of OpenGL based elements, the buffers have the
  * #GstVideoGLTextureUploadMeta meta, which efficiently copies the
@@ -115,12 +105,11 @@
  * processed by other elements, but the performance would be rather
  * bad.
  *
- * <refsect2>
- * <title>Example launch line</title>
+ * ## Example launch line
+ *
  * |[
  * gst-launch-1.0 filesrc location=~/sample.h263 ! h263parse ! vaapih263dec ! vaapisink
  * ]|
- * </refsect2>
  */
 
 /**
@@ -129,9 +118,7 @@
  *
  * vaapih264dec decodes from H264 bitstreams to surfaces suitable
  * for the vaapisink or vaapipostproc elements using the installed
- * <ulink
- * url="https://wiki.freedesktop.org/www/Software/vaapi/">VA-API</ulink>
- * back-end.
+ * [VA-API](https://wiki.freedesktop.org/www/Software/vaapi/) back-end.
  *
  * In the case of OpenGL based elements, the buffers have the
  * #GstVideoGLTextureUploadMeta meta, which efficiently copies the
@@ -141,12 +128,11 @@
  * processed by other elements, but the performance would be rather
  * bad.
  *
- * <refsect2>
- * <title>Example launch line</title>
+ * ## Example launch line
+ *
  * |[
  * gst-launch-1.0 filesrc location=~/big_buck_bunny.mov ! qtdemux ! h264parse ! vaapih264dec ! vaapisink
  * ]|
- * </refsect2>
  */
 
 /**
@@ -155,9 +141,7 @@
  *
  * vaapih265dec decodes from H265 bitstreams to surfaces suitable
  * for the vaapisink or vaapipostproc elements using the installed
- * <ulink
- * url="https://wiki.freedesktop.org/www/Software/vaapi/">VA-API</ulink>
- * back-end.
+ * [VA-API](https://wiki.freedesktop.org/www/Software/vaapi/) back-end.
  *
  * In the case of OpenGL based elements, the buffers have the
  * #GstVideoGLTextureUploadMeta meta, which efficiently copies the
@@ -167,12 +151,11 @@
  * processed by other elements, but the performance would be rather
  * bad.
  *
- * <refsect2>
- * <title>Example launch line</title>
+ * ## Example launch line
+ *
  * |[
  * gst-launch-1.0 filesrc location=./sample.bin ! h265parse ! vaapih265dec ! vaapisink
  * ]|
- * </refsect2>
  */
 
 /**
@@ -181,9 +164,7 @@
  *
  * vaapivc1dec decodes from VC1 bitstreams to surfaces suitable
  * for the vaapisink or vaapipostproc elements using the installed
- * <ulink
- * url="https://wiki.freedesktop.org/www/Software/vaapi/">VA-API</ulink>
- * back-end.
+ * [VA-API](https://wiki.freedesktop.org/www/Software/vaapi/) back-end.
  *
  * In the case of OpenGL based elements, the buffers have the
  * #GstVideoGLTextureUploadMeta meta, which efficiently copies the
@@ -193,12 +174,11 @@
  * processed by other elements, but the performance would be rather
  * bad.
  *
- * <refsect2>
- * <title>Example launch line</title>
+ * ## Example launch line
+ *
  * |[
  * gst-launch-1.0 filesrc location=~/elephants_dream.wmv  ! asfdemux ! vaapivc1dec ! vaapisink
  * ]|
- * </refsect2>
  */
 
 /**
@@ -207,9 +187,7 @@
  *
  * vaapivp8dec decodes from VP8 bitstreams to surfaces suitable
  * for the vaapisink or vaapipostproc elements using the installed
- * <ulink
- * url="https://wiki.freedesktop.org/www/Software/vaapi/">VA-API</ulink>
- * back-end.
+ * [VA-API](https://wiki.freedesktop.org/www/Software/vaapi/) back-end.
  *
  * In the case of OpenGL based elements, the buffers have the
  * #GstVideoGLTextureUploadMeta meta, which efficiently copies the
@@ -219,12 +197,11 @@
  * processed by other elements, but the performance would be rather
  * bad.
  *
- * <refsect2>
- * <title>Example launch line</title>
+ * ## Example launch line
+ *
  * |[
  * gst-launch-1.0 filesrc location=./sample.webm ! matroskademux ! vaapivp8dec ! vaapisink
  * ]|
- * </refsect2>
  */
 
 /**
@@ -233,9 +210,7 @@
  *
  * vaapivp9dec decodes from VP9 bitstreams to surfaces suitable
  * for the vaapisink or vaapipostproc elements using the installed
- * <ulink
- * url="https://wiki.freedesktop.org/www/Software/vaapi/">VA-API</ulink>
- * back-end.
+ * [VA-API](https://wiki.freedesktop.org/www/Software/vaapi/) back-end.
  *
  * In the case of OpenGL based elements, the buffers have the
  * #GstVideoGLTextureUploadMeta meta, which efficiently copies the
@@ -245,10 +220,8 @@
  * processed by other elements, but the performance would be rather
  * bad.
  *
- * <refsect2>
- * <title>Example launch line</title>
+ * ## Example launch line
  * |[
  * gst-launch-1.0 filesrc location=./sample.vp9.webm ! ivfparse ! vaapivp9dec ! vaapisink
  * ]|
- * </refsect2>
  */

@@ -28,6 +28,7 @@
 
 #include "sysdeps.h"
 #include "gstvaapicompat.h"
+#include "gstvaapiobject_priv.h"
 #include "gstvaapiwindow_wayland.h"
 #include "gstvaapiwindow_priv.h"
 #include "gstvaapidisplay_wayland.h"
@@ -36,20 +37,17 @@
 #include "gstvaapifilter.h"
 #include "gstvaapisurfacepool.h"
 
-#define DEBUG 1
-#include "gstvaapidebug.h"
+GST_DEBUG_CATEGORY_EXTERN (gst_debug_vaapi_window);
+#define GST_CAT_DEFAULT gst_debug_vaapi_window
 
 #define GST_VAAPI_WINDOW_WAYLAND_CAST(obj) \
     ((GstVaapiWindowWayland *)(obj))
 
 #define GST_VAAPI_WINDOW_WAYLAND_GET_PRIVATE(obj) \
-    (&GST_VAAPI_WINDOW_WAYLAND_CAST(obj)->priv)
-
-#define GST_VAAPI_WINDOW_WAYLAND_CLASS(klass) \
-  ((GstVaapiWindowWaylandClass *)(klass))
+    gst_vaapi_window_wayland_get_instance_private (GST_VAAPI_WINDOW_WAYLAND_CAST (obj))
 
 #define GST_VAAPI_WINDOW_WAYLAND_GET_CLASS(obj) \
-  GST_VAAPI_WINDOW_WAYLAND_CLASS (GST_VAAPI_WINDOW_GET_CLASS (obj))
+    (G_TYPE_INSTANCE_GET_CLASS ((obj), GST_TYPE_VAAPI_WINDOW_WAYLAND, GstVaapiWindowWaylandClass))
 
 typedef struct _GstVaapiWindowWaylandPrivate GstVaapiWindowWaylandPrivate;
 typedef struct _GstVaapiWindowWaylandClass GstVaapiWindowWaylandClass;
@@ -100,7 +98,9 @@ frame_state_free (FrameState * frame)
 
 struct _GstVaapiWindowWaylandPrivate
 {
-  struct wl_shell_surface *shell_surface;
+  struct xdg_surface *xdg_surface;
+  struct xdg_toplevel *xdg_toplevel;
+  struct wl_shell_surface *wl_shell_surface;
   struct wl_surface *surface;
   struct wl_region *opaque_region;
   struct wl_event_queue *event_queue;
@@ -123,26 +123,95 @@ struct _GstVaapiWindowWayland
 {
   /*< private > */
   GstVaapiWindow parent_instance;
-
-  GstVaapiWindowWaylandPrivate priv;
 };
 
 /**
  * GstVaapiWindowWaylandClass:
  *
- * An Wayland #Window wrapper class.
+ * An Wayland Window wrapper class.
  */
 struct _GstVaapiWindowWaylandClass
 {
   /*< private > */
   GstVaapiWindowClass parent_class;
-  GstVaapiObjectFinalizeFunc parent_finalize;
+};
+
+G_DEFINE_TYPE_WITH_PRIVATE (GstVaapiWindowWayland, gst_vaapi_window_wayland,
+    GST_TYPE_VAAPI_WINDOW);
+
+/* Object signals */
+enum
+{
+  SIZE_CHANGED,
+  N_SIGNALS
+};
+
+static guint signals[N_SIGNALS];
+
+static void
+handle_xdg_toplevel_configure (void *data, struct xdg_toplevel *xdg_toplevel,
+    int32_t width, int32_t height, struct wl_array *states)
+{
+  GstVaapiWindow *window = GST_VAAPI_WINDOW (data);
+  const uint32_t *state;
+
+  GST_DEBUG ("Got XDG-toplevel::reconfigure, [width x height] = [%d x %d]",
+      width, height);
+
+  wl_array_for_each (state, states) {
+    switch (*state) {
+      case XDG_TOPLEVEL_STATE_FULLSCREEN:
+      case XDG_TOPLEVEL_STATE_MAXIMIZED:
+      case XDG_TOPLEVEL_STATE_RESIZING:
+      case XDG_TOPLEVEL_STATE_ACTIVATED:
+        break;
+    }
+  }
+
+  if (width > 0 && height > 0) {
+    gst_vaapi_window_set_size (window, width, height);
+    g_signal_emit (window, signals[SIZE_CHANGED], 0, width, height);
+  }
+}
+
+static void
+handle_xdg_toplevel_close (void *data, struct xdg_toplevel *xdg_toplevel)
+{
+}
+
+static const struct xdg_toplevel_listener xdg_toplevel_listener = {
+  handle_xdg_toplevel_configure,
+  handle_xdg_toplevel_close,
 };
 
 static gboolean
 gst_vaapi_window_wayland_show (GstVaapiWindow * window)
 {
-  GST_WARNING ("unimplemented GstVaapiWindowWayland::show()");
+  GstVaapiWindowWaylandPrivate *priv =
+      GST_VAAPI_WINDOW_WAYLAND_GET_PRIVATE (window);
+
+  if (priv->xdg_surface == NULL) {
+    GST_FIXME ("GstVaapiWindowWayland::show() unimplemented for wl_shell");
+    return TRUE;
+  }
+
+  if (priv->xdg_toplevel != NULL) {
+    GST_DEBUG ("XDG toplevel already mapped");
+    return TRUE;
+  }
+
+  /* Create a toplevel window out of it */
+  priv->xdg_toplevel = xdg_surface_get_toplevel (priv->xdg_surface);
+  g_return_val_if_fail (priv->xdg_toplevel, FALSE);
+  xdg_toplevel_set_title (priv->xdg_toplevel, "VA-API Wayland window");
+  wl_proxy_set_queue ((struct wl_proxy *) priv->xdg_toplevel,
+      priv->event_queue);
+
+  xdg_toplevel_add_listener (priv->xdg_toplevel, &xdg_toplevel_listener,
+      window);
+
+  /* Commit the xdg_surface state as top-level window */
+  wl_surface_commit (priv->surface);
 
   return TRUE;
 }
@@ -150,7 +219,18 @@ gst_vaapi_window_wayland_show (GstVaapiWindow * window)
 static gboolean
 gst_vaapi_window_wayland_hide (GstVaapiWindow * window)
 {
-  GST_WARNING ("unimplemented GstVaapiWindowWayland::hide()");
+  GstVaapiWindowWaylandPrivate *priv =
+      GST_VAAPI_WINDOW_WAYLAND_GET_PRIVATE (window);
+
+  if (priv->xdg_surface == NULL) {
+    GST_FIXME ("GstVaapiWindowWayland::hide() unimplemented for wl_shell");
+    return TRUE;
+  }
+
+  if (priv->xdg_toplevel != NULL) {
+    g_clear_pointer (&priv->xdg_toplevel, xdg_toplevel_destroy);
+    wl_surface_commit (priv->surface);
+  }
 
   return TRUE;
 }
@@ -161,7 +241,7 @@ gst_vaapi_window_wayland_sync (GstVaapiWindow * window)
   GstVaapiWindowWaylandPrivate *const priv =
       GST_VAAPI_WINDOW_WAYLAND_GET_PRIVATE (window);
   struct wl_display *const wl_display =
-      GST_VAAPI_OBJECT_NATIVE_DISPLAY (window);
+      GST_VAAPI_WINDOW_NATIVE_DISPLAY (window);
 
   if (priv->sync_failed)
     return FALSE;
@@ -215,20 +295,20 @@ error:
 }
 
 static void
-handle_ping (void *data, struct wl_shell_surface *shell_surface,
+handle_ping (void *data, struct wl_shell_surface *wl_shell_surface,
     uint32_t serial)
 {
-  wl_shell_surface_pong (shell_surface, serial);
+  wl_shell_surface_pong (wl_shell_surface, serial);
 }
 
 static void
-handle_configure (void *data, struct wl_shell_surface *shell_surface,
+handle_configure (void *data, struct wl_shell_surface *wl_shell_surface,
     uint32_t edges, int32_t width, int32_t height)
 {
 }
 
 static void
-handle_popup_done (void *data, struct wl_shell_surface *shell_surface)
+handle_popup_done (void *data, struct wl_shell_surface *wl_shell_surface)
 {
 }
 
@@ -236,6 +316,17 @@ static const struct wl_shell_surface_listener shell_surface_listener = {
   handle_ping,
   handle_configure,
   handle_popup_done
+};
+
+static void
+handle_xdg_surface_configure (void *data, struct xdg_surface *xdg_surface,
+    uint32_t serial)
+{
+  xdg_surface_ack_configure (xdg_surface, serial);
+}
+
+static const struct xdg_surface_listener xdg_surface_listener = {
+  handle_xdg_surface_configure,
 };
 
 static gboolean
@@ -250,10 +341,20 @@ gst_vaapi_window_wayland_set_fullscreen (GstVaapiWindow * window,
     return TRUE;
   }
 
+  /* XDG-shell */
+  if (priv->xdg_toplevel != NULL) {
+    if (fullscreen)
+      xdg_toplevel_set_fullscreen (priv->xdg_toplevel, NULL);
+    else
+      xdg_toplevel_unset_fullscreen (priv->xdg_toplevel);
+    return TRUE;
+  }
+
+  /* wl_shell fallback */
   if (!fullscreen)
-    wl_shell_surface_set_toplevel (priv->shell_surface);
+    wl_shell_surface_set_toplevel (priv->wl_shell_surface);
   else {
-    wl_shell_surface_set_fullscreen (priv->shell_surface,
+    wl_shell_surface_set_fullscreen (priv->wl_shell_surface,
         WL_SHELL_SURFACE_FULLSCREEN_METHOD_SCALE, 0, NULL);
   }
 
@@ -267,38 +368,54 @@ gst_vaapi_window_wayland_create (GstVaapiWindow * window,
   GstVaapiWindowWaylandPrivate *const priv =
       GST_VAAPI_WINDOW_WAYLAND_GET_PRIVATE (window);
   GstVaapiDisplayWaylandPrivate *const priv_display =
-      GST_VAAPI_DISPLAY_WAYLAND_GET_PRIVATE (GST_VAAPI_OBJECT_DISPLAY (window));
+      GST_VAAPI_DISPLAY_WAYLAND_GET_PRIVATE (GST_VAAPI_WINDOW_DISPLAY (window));
 
   GST_DEBUG ("create window, size %ux%u", *width, *height);
 
   g_return_val_if_fail (priv_display->compositor != NULL, FALSE);
-  g_return_val_if_fail (priv_display->shell != NULL, FALSE);
+  g_return_val_if_fail (priv_display->xdg_wm_base || priv_display->wl_shell,
+      FALSE);
 
-  GST_VAAPI_OBJECT_LOCK_DISPLAY (window);
+  GST_VAAPI_WINDOW_LOCK_DISPLAY (window);
   priv->event_queue = wl_display_create_queue (priv_display->wl_display);
-  GST_VAAPI_OBJECT_UNLOCK_DISPLAY (window);
+  GST_VAAPI_WINDOW_UNLOCK_DISPLAY (window);
   if (!priv->event_queue)
     return FALSE;
 
-  GST_VAAPI_OBJECT_LOCK_DISPLAY (window);
+  GST_VAAPI_WINDOW_LOCK_DISPLAY (window);
   priv->surface = wl_compositor_create_surface (priv_display->compositor);
-  GST_VAAPI_OBJECT_UNLOCK_DISPLAY (window);
+  GST_VAAPI_WINDOW_UNLOCK_DISPLAY (window);
   if (!priv->surface)
     return FALSE;
   wl_proxy_set_queue ((struct wl_proxy *) priv->surface, priv->event_queue);
 
-  GST_VAAPI_OBJECT_LOCK_DISPLAY (window);
-  priv->shell_surface =
-      wl_shell_get_shell_surface (priv_display->shell, priv->surface);
-  GST_VAAPI_OBJECT_UNLOCK_DISPLAY (window);
-  if (!priv->shell_surface)
-    return FALSE;
-  wl_proxy_set_queue ((struct wl_proxy *) priv->shell_surface,
-      priv->event_queue);
+  /* Prefer XDG-shell over deprecated wl_shell (if available) */
+  if (priv_display->xdg_wm_base) {
+    /* Create the XDG surface. We make the toplevel on VaapiWindow::show() */
+    GST_VAAPI_WINDOW_LOCK_DISPLAY (window);
+    priv->xdg_surface = xdg_wm_base_get_xdg_surface (priv_display->xdg_wm_base,
+        priv->surface);
+    GST_VAAPI_WINDOW_UNLOCK_DISPLAY (window);
+    if (!priv->xdg_surface)
+      return FALSE;
+    wl_proxy_set_queue ((struct wl_proxy *) priv->xdg_surface,
+        priv->event_queue);
+    xdg_surface_add_listener (priv->xdg_surface, &xdg_surface_listener, window);
+  } else {
+    /* Fall back to wl_shell */
+    GST_VAAPI_WINDOW_LOCK_DISPLAY (window);
+    priv->wl_shell_surface = wl_shell_get_shell_surface (priv_display->wl_shell,
+        priv->surface);
+    GST_VAAPI_WINDOW_UNLOCK_DISPLAY (window);
+    if (!priv->wl_shell_surface)
+      return FALSE;
+    wl_proxy_set_queue ((struct wl_proxy *) priv->wl_shell_surface,
+        priv->event_queue);
 
-  wl_shell_surface_add_listener (priv->shell_surface,
-      &shell_surface_listener, priv);
-  wl_shell_surface_set_toplevel (priv->shell_surface);
+    wl_shell_surface_add_listener (priv->wl_shell_surface,
+        &shell_surface_listener, priv);
+    wl_shell_surface_set_toplevel (priv->wl_shell_surface);
+  }
 
   priv->poll = gst_poll_new (TRUE);
   gst_poll_fd_init (&priv->pollfd);
@@ -312,35 +429,36 @@ gst_vaapi_window_wayland_create (GstVaapiWindow * window,
 }
 
 static void
-gst_vaapi_window_wayland_destroy (GstVaapiWindow * window)
+gst_vaapi_window_wayland_finalize (GObject * object)
 {
+  GstVaapiWindow *window = GST_VAAPI_WINDOW (object);
   GstVaapiWindowWaylandPrivate *const priv =
       GST_VAAPI_WINDOW_WAYLAND_GET_PRIVATE (window);
   struct wl_display *const wl_display =
-      GST_VAAPI_OBJECT_NATIVE_DISPLAY (window);
+      GST_VAAPI_WINDOW_NATIVE_DISPLAY (window);
 
   /* Make sure that the last wl buffer's callback could be called */
-  GST_VAAPI_OBJECT_LOCK_DISPLAY (window);
+  GST_VAAPI_WINDOW_LOCK_DISPLAY (window);
   if (priv->surface) {
     wl_surface_attach (priv->surface, NULL, 0, 0);
     wl_surface_commit (priv->surface);
     wl_display_flush (wl_display);
   }
-  GST_VAAPI_OBJECT_UNLOCK_DISPLAY (window);
+  GST_VAAPI_WINDOW_UNLOCK_DISPLAY (window);
 
   gst_poll_set_flushing (priv->poll, TRUE);
 
   if (priv->event_queue)
     wl_display_roundtrip_queue (wl_display, priv->event_queue);
 
-  g_clear_pointer (&priv->shell_surface, wl_shell_surface_destroy);
+  g_clear_pointer (&priv->xdg_surface, xdg_surface_destroy);
+  g_clear_pointer (&priv->wl_shell_surface, wl_shell_surface_destroy);
   g_clear_pointer (&priv->surface, wl_surface_destroy);
   g_clear_pointer (&priv->event_queue, wl_event_queue_destroy);
 
   gst_poll_free (priv->poll);
 
-  GST_VAAPI_WINDOW_WAYLAND_GET_CLASS (window)->parent_finalize (GST_VAAPI_OBJECT
-      (window));
+  G_OBJECT_CLASS (gst_vaapi_window_wayland_parent_class)->finalize (object);
 }
 
 static gboolean
@@ -350,15 +468,15 @@ gst_vaapi_window_wayland_resize (GstVaapiWindow * window,
   GstVaapiWindowWaylandPrivate *const priv =
       GST_VAAPI_WINDOW_WAYLAND_GET_PRIVATE (window);
   GstVaapiDisplayWaylandPrivate *const priv_display =
-      GST_VAAPI_DISPLAY_WAYLAND_GET_PRIVATE (GST_VAAPI_OBJECT_DISPLAY (window));
+      GST_VAAPI_DISPLAY_WAYLAND_GET_PRIVATE (GST_VAAPI_WINDOW_DISPLAY (window));
 
   GST_DEBUG ("resize window, new size %ux%u", width, height);
 
   if (priv->opaque_region)
     wl_region_destroy (priv->opaque_region);
-  GST_VAAPI_OBJECT_LOCK_DISPLAY (window);
+  GST_VAAPI_WINDOW_LOCK_DISPLAY (window);
   priv->opaque_region = wl_compositor_create_region (priv_display->compositor);
-  GST_VAAPI_OBJECT_UNLOCK_DISPLAY (window);
+  GST_VAAPI_WINDOW_UNLOCK_DISPLAY (window);
   wl_region_add (priv->opaque_region, 0, 0, width, height);
 
   return TRUE;
@@ -411,9 +529,9 @@ gst_vaapi_window_wayland_render (GstVaapiWindow * window,
 {
   GstVaapiWindowWaylandPrivate *const priv =
       GST_VAAPI_WINDOW_WAYLAND_GET_PRIVATE (window);
-  GstVaapiDisplay *const display = GST_VAAPI_OBJECT_DISPLAY (window);
+  GstVaapiDisplay *const display = GST_VAAPI_WINDOW_DISPLAY (window);
   struct wl_display *const wl_display =
-      GST_VAAPI_OBJECT_NATIVE_DISPLAY (window);
+      GST_VAAPI_WINDOW_NATIVE_DISPLAY (window);
   struct wl_buffer *buffer;
   FrameState *frame;
   guint width, height, va_flags;
@@ -434,12 +552,12 @@ gst_vaapi_window_wayland_render (GstVaapiWindow * window,
 
   /* Try to construct a Wayland buffer from VA surface as is (without VPP) */
   if (!priv->need_vpp) {
-    GST_VAAPI_OBJECT_LOCK_DISPLAY (window);
+    GST_VAAPI_WINDOW_LOCK_DISPLAY (window);
     va_flags = from_GstVaapiSurfaceRenderFlags (flags);
     status = vaGetSurfaceBufferWl (GST_VAAPI_DISPLAY_VADISPLAY (display),
         GST_VAAPI_OBJECT_ID (surface),
         va_flags & (VA_TOP_FIELD | VA_BOTTOM_FIELD), &buffer);
-    GST_VAAPI_OBJECT_UNLOCK_DISPLAY (window);
+    GST_VAAPI_WINDOW_UNLOCK_DISPLAY (window);
     if (status == VA_STATUS_ERROR_FLAG_NOT_SUPPORTED ||
         status == VA_STATUS_ERROR_UNIMPLEMENTED ||
         status == VA_STATUS_ERROR_INVALID_IMAGE_FORMAT)
@@ -463,10 +581,10 @@ gst_vaapi_window_wayland_render (GstVaapiWindow * window,
       }
     }
 
-    GST_VAAPI_OBJECT_LOCK_DISPLAY (window);
+    GST_VAAPI_WINDOW_LOCK_DISPLAY (window);
     status = vaGetSurfaceBufferWl (GST_VAAPI_DISPLAY_VADISPLAY (display),
         GST_VAAPI_OBJECT_ID (surface), VA_FRAME_PICTURE, &buffer);
-    GST_VAAPI_OBJECT_UNLOCK_DISPLAY (window);
+    GST_VAAPI_WINDOW_UNLOCK_DISPLAY (window);
     if (!vaapi_check_status (status, "vaGetSurfaceBufferWl()"))
       return FALSE;
   }
@@ -492,7 +610,7 @@ gst_vaapi_window_wayland_render (GstVaapiWindow * window,
   }
 
   /* XXX: attach to the specified target rectangle */
-  GST_VAAPI_OBJECT_LOCK_DISPLAY (window);
+  GST_VAAPI_WINDOW_LOCK_DISPLAY (window);
   wl_surface_attach (priv->surface, buffer, 0, 0);
   wl_surface_damage (priv->surface, 0, 0, width, height);
 
@@ -510,7 +628,7 @@ gst_vaapi_window_wayland_render (GstVaapiWindow * window,
 
   wl_surface_commit (priv->surface);
   wl_display_flush (wl_display);
-  GST_VAAPI_OBJECT_UNLOCK_DISPLAY (window);
+  GST_VAAPI_WINDOW_UNLOCK_DISPLAY (window);
   return TRUE;
 }
 
@@ -539,14 +657,10 @@ gst_vaapi_window_wayland_unblock_cancel (GstVaapiWindow * window)
 static void
 gst_vaapi_window_wayland_class_init (GstVaapiWindowWaylandClass * klass)
 {
-  GstVaapiObjectClass *const object_class = GST_VAAPI_OBJECT_CLASS (klass);
+  GObjectClass *const object_class = G_OBJECT_CLASS (klass);
   GstVaapiWindowClass *const window_class = GST_VAAPI_WINDOW_CLASS (klass);
 
-  gst_vaapi_window_class_init (&klass->parent_class);
-
-  klass->parent_finalize = object_class->finalize;
-  object_class->finalize = (GstVaapiObjectFinalizeFunc)
-      gst_vaapi_window_wayland_destroy;
+  object_class->finalize = gst_vaapi_window_wayland_finalize;
 
   window_class->create = gst_vaapi_window_wayland_create;
   window_class->show = gst_vaapi_window_wayland_show;
@@ -556,13 +670,16 @@ gst_vaapi_window_wayland_class_init (GstVaapiWindowWaylandClass * klass)
   window_class->set_fullscreen = gst_vaapi_window_wayland_set_fullscreen;
   window_class->unblock = gst_vaapi_window_wayland_unblock;
   window_class->unblock_cancel = gst_vaapi_window_wayland_unblock_cancel;
+
+  signals[SIZE_CHANGED] = g_signal_new ("size-changed",
+      G_TYPE_FROM_CLASS (klass), G_SIGNAL_RUN_LAST, 0, NULL, NULL, NULL,
+      G_TYPE_NONE, 2, G_TYPE_INT, G_TYPE_INT);
 }
 
-#define gst_vaapi_window_wayland_finalize \
-    gst_vaapi_window_wayland_destroy
-
-GST_VAAPI_OBJECT_DEFINE_CLASS_WITH_CODE (GstVaapiWindowWayland,
-    gst_vaapi_window_wayland, gst_vaapi_window_wayland_class_init (&g_class));
+static void
+gst_vaapi_window_wayland_init (GstVaapiWindowWayland * window)
+{
+}
 
 /**
  * gst_vaapi_window_wayland_new:
@@ -580,11 +697,8 @@ GstVaapiWindow *
 gst_vaapi_window_wayland_new (GstVaapiDisplay * display,
     guint width, guint height)
 {
-  GST_DEBUG ("new window, size %ux%u", width, height);
-
   g_return_val_if_fail (GST_VAAPI_IS_DISPLAY_WAYLAND (display), NULL);
 
-  return gst_vaapi_window_new_internal (GST_VAAPI_WINDOW_CLASS
-      (gst_vaapi_window_wayland_class ()), display, GST_VAAPI_ID_INVALID, width,
-      height);
+  return gst_vaapi_window_new_internal (GST_TYPE_VAAPI_WINDOW_WAYLAND, display,
+      GST_VAAPI_ID_INVALID, width, height);
 }

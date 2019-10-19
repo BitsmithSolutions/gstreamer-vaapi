@@ -149,8 +149,7 @@ main (int argc, char *argv[])
     g_error ("could not create video overlay composition");
   gst_video_overlay_rectangle_unref (overlay);
 
-  if (!gst_vaapi_surface_set_subpictures_from_composition (surface, compo,
-          FALSE))
+  if (!gst_vaapi_surface_set_subpictures_from_composition (surface, compo))
     g_error ("could not create subpictures from video overlay compoition");
 
   gst_vaapi_window_show (window);
@@ -164,7 +163,7 @@ main (int argc, char *argv[])
   gst_video_overlay_composition_unref (compo);
   gst_vaapi_surface_proxy_unref (proxy);
   gst_object_unref (decoder);
-  gst_vaapi_window_unref (window);
+  gst_object_unref (window);
   gst_object_unref (display);
   g_free (g_codec_str);
   video_output_exit ();

@@ -2,15 +2,18 @@ gstlibvaapi_sources = [
   'gstvaapibufferproxy.c',
   'gstvaapicodec_objects.c',
   'gstvaapicontext.c',
-  'gstvaapicontext_overlay.c',
   'gstvaapidecoder.c',
   'gstvaapidecoder_dpb.c',
   'gstvaapidecoder_h264.c',
+  'gstvaapidecoder_h265.c',
+  'gstvaapidecoder_jpeg.c',
   'gstvaapidecoder_mpeg2.c',
   'gstvaapidecoder_mpeg4.c',
   'gstvaapidecoder_objects.c',
   'gstvaapidecoder_unit.c',
   'gstvaapidecoder_vc1.c',
+  'gstvaapidecoder_vp8.c',
+  'gstvaapidecoder_vp9.c',
   'gstvaapidisplay.c',
   'gstvaapifilter.c',
   'gstvaapiimage.c',
@@ -20,6 +23,7 @@ gstlibvaapi_sources = [
   'gstvaapiparser_frame.c',
   'gstvaapipixmap.c',
   'gstvaapiprofile.c',
+  'gstvaapiprofilecaps.c',
   'gstvaapisubpicture.c',
   'gstvaapisurface.c',
   'gstvaapisurface_drm.c',
@@ -44,9 +48,12 @@ gstlibvaapi_headers = [
   'gstvaapidecoder.h',
   'gstvaapidecoder_h264.h',
   'gstvaapidecoder_h265.h',
+  'gstvaapidecoder_jpeg.h',
   'gstvaapidecoder_mpeg2.h',
   'gstvaapidecoder_mpeg4.h',
   'gstvaapidecoder_vc1.h',
+  'gstvaapidecoder_vp8.h',
+  'gstvaapidecoder_vp9.h',
   'gstvaapidisplay.h',
   'gstvaapifilter.h',
   'gstvaapiimage.h',
@@ -54,6 +61,7 @@ gstlibvaapi_headers = [
   'gstvaapiobject.h',
   'gstvaapipixmap.h',
   'gstvaapiprofile.h',
+  'gstvaapiprofilecaps.h',
   'gstvaapisubpicture.h',
   'gstvaapisurface.h',
   'gstvaapisurface_drm.h',
@@ -71,26 +79,6 @@ gstlibvaapi_headers = [
   'video-format.h',
 ]
 
-if USE_JPEG_DECODER
-  gstlibvaapi_sources += 'gstvaapidecoder_jpeg.c'
-  gstlibvaapi_headers += 'gstvaapidecoder_jpeg.h'
-endif
-
-if USE_VP8_DECODER
-  gstlibvaapi_sources += 'gstvaapidecoder_vp8.c'
-  gstlibvaapi_headers += 'gstvaapidecoder_vp8.h'
-endif
-
-if USE_H265_DECODER
-  gstlibvaapi_sources += 'gstvaapidecoder_h265.c'
-  gstlibvaapi_headers += 'gstvaapidecoder_h265.h'
-endif
-
-if USE_VP9_DECODER
-  gstlibvaapi_sources += 'gstvaapidecoder_vp9.c'
-  gstlibvaapi_headers += 'gstvaapidecoder_vp9.h'
-endif
-
 if USE_ENCODERS
   gstlibvaapi_sources += [
       'gstvaapicodedbuffer.c',
@@ -98,8 +86,11 @@ if USE_ENCODERS
       'gstvaapicodedbufferproxy.c',
       'gstvaapiencoder.c',
       'gstvaapiencoder_h264.c',
+      'gstvaapiencoder_h265.c',
+      'gstvaapiencoder_jpeg.c',
       'gstvaapiencoder_mpeg2.c',
       'gstvaapiencoder_objects.c',
+      'gstvaapiencoder_vp8.c',
     ]
   gstlibvaapi_headers += [
       'gstvaapicodedbuffer.h',
@@ -107,28 +98,33 @@ if USE_ENCODERS
       'gstvaapicodedbufferproxy.h',
       'gstvaapiencoder.h',
       'gstvaapiencoder_h264.h',
+      'gstvaapiencoder_h265.h',
+      'gstvaapiencoder_jpeg.h',
       'gstvaapiencoder_mpeg2.h',
+      'gstvaapiencoder_vp8.h',
     ]
-endif
-
-if USE_JPEG_ENCODER
-  gstlibvaapi_sources += 'gstvaapiencoder_jpeg.c'
-  gstlibvaapi_headers += 'gstvaapiencoder_jpeg.h'
-endif
-
-if USE_VP8_ENCODER
-  gstlibvaapi_sources += 'gstvaapiencoder_vp8.c'
-  gstlibvaapi_headers += 'gstvaapiencoder_vp8.h'
-endif
-
-if USE_H265_ENCODER
-  gstlibvaapi_sources += 'gstvaapiencoder_h265.c'
-  gstlibvaapi_headers += 'gstvaapiencoder_h265.h'
 endif
 
 if USE_VP9_ENCODER
   gstlibvaapi_sources += 'gstvaapiencoder_vp9.c'
   gstlibvaapi_headers += 'gstvaapiencoder_vp9.h'
+endif
+
+if USE_H264_FEI_ENCODER
+  gstlibvaapi_sources += [
+      'gstvaapifeiutils_h264.c',
+      'gstvaapifei_objects.c',
+      'gstvaapifeienc_h264.c',
+      'gstvaapifeipak_h264.c',
+      'gstvaapiencoder_h264_fei.c',
+    ]
+  gstlibvaapi_headers += [
+      'gstvaapifeiutils_h264.h',
+      'gstvaapifei_objects.h',
+      'gstvaapifeienc_h264.h',
+      'gstvaapifeipak_h264.h',
+      'gstvaapiencoder_h264_fei.h',
+    ]
 endif
 
 if USE_DRM
@@ -188,10 +184,24 @@ if USE_EGL
 endif
 
 if USE_WAYLAND
+  # The XDG shell interface needs to be generated first
+  wayland_protocols_basedir = wayland_protocols_dep.get_pkgconfig_variable('pkgdatadir')
+  xdg_shell_xml_spec = join_paths(wayland_protocols_basedir, 'stable', 'xdg-shell', 'xdg-shell.xml')
+  xdg_shell_header = custom_target('vaapi-xdg-shell-client-header',
+      command: [ wayland_scanner_bin, 'client-header', '@INPUT@', '@OUTPUT@' ],
+      input: xdg_shell_xml_spec,
+      output: 'xdg-shell-client-protocol.h')
+  xdg_shell_code = custom_target('vaapi-xdg-shell-client-code',
+      command: [ wayland_scanner_bin, 'private-code', '@INPUT@', '@OUTPUT@' ],
+      input: xdg_shell_xml_spec,
+      output: 'xdg-shell-client-protocol.c')
+
   gstlibvaapi_sources += [
       'gstvaapidisplay_wayland.c',
       'gstvaapiwindow_wayland.c',
-    ]
+      xdg_shell_header,
+      xdg_shell_code,
+  ]
   gstlibvaapi_headers += [
       'gstvaapidisplay_wayland.h',
       'gstvaapiwindow_wayland.h',
@@ -202,7 +212,8 @@ gstlibvaapi_deps = [ gstbase_dep,
                      gstvideo_dep,
                      gstgl_dep,
                      gstcodecparsers_dep,
-                     libva_dep ]
+                     libva_dep,
+                     libm ]
 if USE_DRM
   gstlibvaapi_deps  += [libva_drm_dep, libdrm_dep, libudev_dep]
 endif
@@ -213,14 +224,14 @@ if USE_GLX
   gstlibvaapi_deps  += [libva_x11_dep, x11_dep, gl_dep, libdl_dep]
 endif
 if USE_WAYLAND
-  gstlibvaapi_deps  += [libva_wayland_dep, wayland_client_dep]
+  gstlibvaapi_deps  += [libva_wayland_dep, wayland_client_dep, wayland_protocols_dep]
 endif
 if USE_X11
   gstlibvaapi_deps  += [libva_x11_dep, x11_dep, xrandr_dep, xrender_dep]
 endif
 
 gstlibvaapi = static_library('gstlibvaapi-@0@'.format(api_version),
-  gstlibvaapi_sources,
+  gstlibvaapi_sources + gstlibvaapi_headers,
   c_args : gstreamer_vaapi_args + [ '-DGST_USE_UNSTABLE_API', '-DGST_VAAPI_VERSION_ID="@0@"'.format(gst_version)],
   include_directories: [configinc, libsinc],
   dependencies : gstlibvaapi_deps,

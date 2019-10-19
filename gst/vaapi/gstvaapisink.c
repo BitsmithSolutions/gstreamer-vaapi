@@ -26,16 +26,15 @@
  * SECTION:element-vaapisink
  * @short_description: A VA-API based video sink
  *
- * vaapisink renders video frames to a drawable (X #Window) on a local
+ * vaapisink renders video frames to a drawable (X Window) on a local
  * display using the Video Acceleration (VA) API. The element will
  * create its own internal window and render into it.
  *
- * <refsect2>
- * <title>Example launch line</title>
+ * ## Example launch line
+ *
  * |[
  * gst-launch-1.0 videotestsrc ! vaapisink
  * ]|
- * </refsect2>
  */
 
 #include "gstcompat.h"
@@ -439,6 +438,35 @@ gst_vaapisink_x11_handle_events (GstVaapiSink * sink)
     }
     if (do_expose)
       gst_vaapisink_video_overlay_expose (GST_VIDEO_OVERLAY (sink));
+
+    /* Handle Display events */
+    for (;;) {
+      gst_vaapi_display_lock (display);
+      if (XPending (x11_dpy) == 0) {
+        gst_vaapi_display_unlock (display);
+        break;
+      }
+      XNextEvent (x11_dpy, &e);
+      gst_vaapi_display_unlock (display);
+
+      switch (e.type) {
+        case ClientMessage:{
+          Atom wm_delete;
+
+          wm_delete = XInternAtom (x11_dpy, "WM_DELETE_WINDOW", False);
+          if (wm_delete == (Atom) e.xclient.data.l[0]) {
+            /* Handle window deletion by posting an error on the bus */
+            GST_ELEMENT_ERROR (sink, RESOURCE, NOT_FOUND,
+                ("Output window was closed"), (NULL));
+            return FALSE;
+          }
+          break;
+        }
+        default:
+          break;
+      }
+    }
+
   }
   return TRUE;
 }
@@ -452,7 +480,7 @@ gst_vaapisink_x11_pre_start_event_thread (GstVaapiSink * sink)
       PointerMotionMask | ExposureMask | StructureNotifyMask);
 
   if (!sink->foreign_window)
-      x11_event_mask |= ButtonPressMask | ButtonReleaseMask;
+    x11_event_mask |= ButtonPressMask | ButtonReleaseMask;
 
   if (sink->window) {
     gst_vaapi_display_lock (GST_VAAPI_DISPLAY (display));
@@ -504,6 +532,17 @@ gst_vaapisink_backend_x11 (void)
 #include <gst/vaapi/gstvaapidisplay_wayland.h>
 #include <gst/vaapi/gstvaapiwindow_wayland.h>
 
+static void
+on_window_wayland_size_changed (GstVaapiWindowWayland * window, gint width,
+    gint height, gpointer user_data)
+{
+  GstVaapiSink *sink = GST_VAAPISINK (user_data);
+
+  GST_DEBUG ("Wayland window size changed to: %dx%d", width, height);
+  gst_vaapisink_reconfigure_window (sink);
+  gst_vaapisink_show_frame (GST_VIDEO_SINK_CAST (sink), NULL);
+}
+
 static gboolean
 gst_vaapisink_wayland_create_window (GstVaapiSink * sink, guint width,
     guint height)
@@ -515,6 +554,10 @@ gst_vaapisink_wayland_create_window (GstVaapiSink * sink, guint width,
   sink->window = gst_vaapi_window_wayland_new (display, width, height);
   if (!sink->window)
     return FALSE;
+
+  g_signal_connect_object (sink->window, "size-changed",
+      G_CALLBACK (on_window_wayland_size_changed), sink, 0);
+
   return TRUE;
 }
 
@@ -1215,7 +1258,7 @@ gst_vaapisink_start (GstBaseSink * base_sink)
 
   /* Ensures possible raw caps earlier to avoid race conditions at
    * get_caps() */
-  if (!gst_vaapi_plugin_base_get_allowed_raw_caps (plugin))
+  if (!gst_vaapi_plugin_base_get_allowed_sinkpad_raw_caps (plugin))
     return FALSE;
 
   return TRUE;
@@ -1251,7 +1294,8 @@ gst_vaapisink_get_caps_impl (GstBaseSink * base_sink)
 
   out_caps = gst_caps_from_string (surface_caps_str);
   raw_caps =
-      gst_vaapi_plugin_base_get_allowed_raw_caps (GST_VAAPI_PLUGIN_BASE (sink));
+      gst_vaapi_plugin_base_get_allowed_sinkpad_raw_caps (GST_VAAPI_PLUGIN_BASE
+      (sink));
   if (!raw_caps)
     return out_caps;
 

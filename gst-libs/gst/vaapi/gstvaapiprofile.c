@@ -31,6 +31,7 @@
 #include <gst/gstbuffer.h>
 #include "gstvaapicompat.h"
 #include "gstvaapiprofile.h"
+#include "gstvaapiutils.h"
 #include "gstvaapiworkarounds.h"
 
 typedef struct _GstVaapiCodecMap GstVaapiCodecMap;
@@ -89,65 +90,53 @@ static const GstVaapiProfileMap gst_vaapi_profiles[] = {
       "video/x-divx, divxversion=5", "advanced-simple"},
   {GST_VAAPI_PROFILE_MPEG4_ADVANCED_SIMPLE, VAProfileMPEG4AdvancedSimple,
       "video/x-xvid", "advanced-simple"},
-#if VA_CHECK_VERSION(0,30,0)
   {GST_VAAPI_PROFILE_H263_BASELINE, VAProfileH263Baseline,
       "video/x-h263, variant=itu, h263version=h263", "baseline"},
-#endif
 #if !VA_CHECK_VERSION(1,0,0)
   {GST_VAAPI_PROFILE_H264_BASELINE, VAProfileH264Baseline,
       "video/x-h264", "baseline"},
 #endif
-#if VA_CHECK_VERSION(0,31,1)
   {GST_VAAPI_PROFILE_H264_CONSTRAINED_BASELINE,
         VAProfileH264ConstrainedBaseline,
       "video/x-h264", "constrained-baseline"},
-#endif
   {GST_VAAPI_PROFILE_H264_MAIN, VAProfileH264Main,
       "video/x-h264", "main"},
   {GST_VAAPI_PROFILE_H264_HIGH, VAProfileH264High,
       "video/x-h264", "high"},
-#if VA_CHECK_VERSION(0,35,2)
   {GST_VAAPI_PROFILE_H264_MULTIVIEW_HIGH, VAProfileH264MultiviewHigh,
       "video/x-h264", "multiview-high"},
   {GST_VAAPI_PROFILE_H264_STEREO_HIGH, VAProfileH264StereoHigh,
       "video/x-h264", "stereo-high"},
-#endif
   {GST_VAAPI_PROFILE_VC1_SIMPLE, VAProfileVC1Simple,
       "video/x-wmv, wmvversion=3", "simple"},
   {GST_VAAPI_PROFILE_VC1_MAIN, VAProfileVC1Main,
       "video/x-wmv, wmvversion=3", "main"},
   {GST_VAAPI_PROFILE_VC1_ADVANCED, VAProfileVC1Advanced,
       "video/x-wmv, wmvversion=3, format=(string)WVC1", "advanced"},
-#if VA_CHECK_VERSION(0,32,0)
   {GST_VAAPI_PROFILE_JPEG_BASELINE, VAProfileJPEGBaseline,
       "image/jpeg", NULL},
-#endif
-#if VA_CHECK_VERSION(0,35,0)
   {GST_VAAPI_PROFILE_VP8, VAProfileVP8Version0_3,
       "video/x-vp8", NULL},
-#endif
-#if VA_CHECK_VERSION(0,37,0)
   {GST_VAAPI_PROFILE_H265_MAIN, VAProfileHEVCMain,
       "video/x-h265", "main"},
   {GST_VAAPI_PROFILE_H265_MAIN10, VAProfileHEVCMain10,
       "video/x-h265", "main-10"},
-#endif
 #if VA_CHECK_VERSION(1,2,0)
   {GST_VAAPI_PROFILE_H265_MAIN_422_10, VAProfileHEVCMain422_10,
       "video/x-h265", "main-422-10"},
+  {GST_VAAPI_PROFILE_H265_MAIN_444, VAProfileHEVCMain444,
+      "video/x-h265", "main-444"},
+  {GST_VAAPI_PROFILE_H265_MAIN_444_10, VAProfileHEVCMain444_10,
+      "video/x-h265", "main-444-10"},
 #endif
-#if VA_CHECK_VERSION(0,38,0)
   {GST_VAAPI_PROFILE_VP9_0, VAProfileVP9Profile0,
       "video/x-vp9", "profile0"},
-#endif
-#if VA_CHECK_VERSION(0,39,0)
   {GST_VAAPI_PROFILE_VP9_1, VAProfileVP9Profile1,
       "video/x-vp9", "profile1"},
   {GST_VAAPI_PROFILE_VP9_2, VAProfileVP9Profile2,
       "video/x-vp9", "profile2"},
   {GST_VAAPI_PROFILE_VP9_3, VAProfileVP9Profile3,
       "video/x-vp9", "profile3"},
-#endif
   {0,}
 };
 
@@ -156,10 +145,8 @@ static const GstVaapiEntrypointMap gst_vaapi_entrypoints[] = {
   {GST_VAAPI_ENTRYPOINT_VLD, VAEntrypointVLD},
   {GST_VAAPI_ENTRYPOINT_IDCT, VAEntrypointIDCT},
   {GST_VAAPI_ENTRYPOINT_MOCO, VAEntrypointMoComp},
-#if VA_CHECK_VERSION(0,30,0)
   {GST_VAAPI_ENTRYPOINT_SLICE_ENCODE, VAEntrypointEncSlice},
   {GST_VAAPI_ENTRYPOINT_PICTURE_ENCODE, VAEntrypointEncPicture},
-#endif
 #if VA_CHECK_VERSION(0,39,1)
   {GST_VAAPI_ENTRYPOINT_SLICE_ENCODE_LP, VAEntrypointEncSliceLP},
 #endif
@@ -256,8 +243,25 @@ gst_vaapi_profile_get_name (GstVaapiProfile profile)
 }
 
 /**
- * gst_vaapi_profile_get_media_type_name:
+ * gst_vaapi_profile_get_va_name:
  * @profile: a #GstVaapiProfile
+ *
+ * Returns a string representation for the supplied @profile as VAProfile.
+ *
+ * Return value: the statically allocated string representation of
+ * @profile as VAProfile
+ */
+const gchar *
+gst_vaapi_profile_get_va_name (GstVaapiProfile profile)
+{
+  const GstVaapiProfileMap *const m = get_profiles_map (profile);
+
+  return m ? string_of_VAProfile (m->va_profile) : NULL;
+}
+
+/**
+ * gst_vaapi_profile_get_media_type_name:
+ * @profile: a #GstVaapiProfileo
  *
  * Returns a string representation for the media type of the supplied
  * @profile.
@@ -336,6 +340,8 @@ gst_vaapi_profile_from_codec_data_h265 (GstBuffer * buffer)
       return GST_VAAPI_PROFILE_H265_MAIN_STILL_PICTURE;
     case 4:
       return GST_VAAPI_PROFILE_H265_MAIN_422_10;
+    case 5:
+      return GST_VAAPI_PROFILE_H265_MAIN_444;
   }
   return 0;
 }

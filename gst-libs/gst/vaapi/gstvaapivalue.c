@@ -150,6 +150,10 @@ gst_vaapi_rate_control_get_type (void)
         "Variable bitrate - Constrained", "vbr_constrained"},
     {GST_VAAPI_RATECONTROL_MB,
         "Macroblock based rate control", "mb"},
+    {GST_VAAPI_RATECONTROL_ICQ,
+        "Constant QP - Intelligent", "icq"},
+    {GST_VAAPI_RATECONTROL_QVBR,
+        "Variable bitrate - Quality defined", "qvbr"},
     {0, NULL, NULL},
   };
 
@@ -210,4 +214,23 @@ gst_vaapi_type_define_enum_subset_from_mask (GstVaapiEnumSubset * subset,
     g_once_init_leave (&subset->type, type);
   }
   return subset->type;
+}
+
+/**
+ * gst_vaapi_enum_type_get_nick:
+ * @type: an enum #GType
+ * @value: the value to get its nick
+ *
+ * Returns: (tranfer none); the string associated with
+ *   @value. Otherwise "<unknown>"
+ **/
+const gchar *
+gst_vaapi_enum_type_get_nick (GType type, gint value)
+{
+  gpointer const klass = g_type_class_peek (type);
+  GEnumValue *const e = g_enum_get_value (klass, value);
+
+  if (e)
+    return e->value_nick;
+  return "<unknown>";
 }

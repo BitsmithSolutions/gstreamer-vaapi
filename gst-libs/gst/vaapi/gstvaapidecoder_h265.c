@@ -251,15 +251,6 @@ gst_vaapi_picture_h265_create (GstVaapiPictureH265 * picture,
   return TRUE;
 }
 
-static inline GstVaapiPictureH265 *
-gst_vaapi_picture_h265_new (GstVaapiDecoderH265 * decoder)
-{
-  return (GstVaapiPictureH265 *)
-      gst_vaapi_codec_object_new (&GstVaapiPictureH265Class,
-      GST_VAAPI_CODEC_BASE (decoder), NULL,
-      sizeof (VAPictureParameterBufferHEVC), NULL, 0, 0);
-}
-
 static inline void
 gst_vaapi_picture_h265_set_reference (GstVaapiPictureH265 * picture,
     guint reference_flags)
@@ -535,6 +526,36 @@ nal_is_ref (guint8 nal_type)
   return ret;
 }
 
+static gboolean
+is_range_extension_profile (GstVaapiProfile profile)
+{
+  if (profile == GST_VAAPI_PROFILE_H265_MAIN_422_10
+      || profile == GST_VAAPI_PROFILE_H265_MAIN_444
+      || profile == GST_VAAPI_PROFILE_H265_MAIN_444_10)
+    return TRUE;
+  return FALSE;
+}
+
+static inline GstVaapiPictureH265 *
+gst_vaapi_picture_h265_new (GstVaapiDecoderH265 * decoder)
+{
+  GstVaapiDecoderH265Private *const priv = &decoder->priv;
+  if (is_range_extension_profile (priv->profile)) {
+#if VA_CHECK_VERSION(1,2,0)
+    return (GstVaapiPictureH265 *)
+        gst_vaapi_codec_object_new (&GstVaapiPictureH265Class,
+        GST_VAAPI_CODEC_BASE (decoder), NULL,
+        sizeof (VAPictureParameterBufferHEVCExtension), NULL, 0, 0);
+#endif
+    return NULL;
+  } else {
+    return (GstVaapiPictureH265 *)
+        gst_vaapi_codec_object_new (&GstVaapiPictureH265Class,
+        GST_VAAPI_CODEC_BASE (decoder), NULL,
+        sizeof (VAPictureParameterBufferHEVC), NULL, 0, 0);
+  }
+}
+
 /* Activates the supplied PPS */
 static GstH265PPS *
 ensure_pps (GstVaapiDecoderH265 * decoder, GstH265PPS * pps)
@@ -655,7 +676,8 @@ dpb_output (GstVaapiDecoderH265 * decoder, GstVaapiFrameStore * fs)
   g_return_val_if_fail (fs != NULL, FALSE);
 
   picture = fs->buffer;
-  g_return_val_if_fail (picture != NULL, FALSE);
+  if (!picture)
+    return FALSE;
 
   picture->output_needed = FALSE;
   return gst_vaapi_picture_output (GST_VAAPI_PICTURE_CAST (picture));
@@ -1123,7 +1145,7 @@ ensure_context (GstVaapiDecoderH265 * decoder, GstH265SPS * sps)
 
   chroma_type =
       gst_vaapi_utils_h265_get_chroma_type (sps->chroma_format_idc,
-      sps->bit_depth_luma_minus8 + 8);
+      sps->bit_depth_luma_minus8 + 8, sps->bit_depth_chroma_minus8 + 8);
   if (!chroma_type) {
     GST_ERROR ("unsupported chroma_format_idc %u", sps->chroma_format_idc);
     return GST_VAAPI_DECODER_STATUS_ERROR_UNSUPPORTED_CHROMA_FORMAT;
@@ -1274,10 +1296,6 @@ ensure_quant_matrix (GstVaapiDecoderH265 * decoder,
     return GST_VAAPI_DECODER_STATUS_ERROR_ALLOCATION_FAILED;
   }
   iq_matrix = base_picture->iq_matrix->param;
-
-  /* Only supporting 4:2:0 */
-  if (sps->chroma_format_idc != 1)
-    return GST_VAAPI_DECODER_STATUS_ERROR_UNSUPPORTED_CHROMA_FORMAT;
 
   fill_iq_matrix_4x4 (iq_matrix, scaling_list);
   fill_iq_matrix_8x8 (iq_matrix, scaling_list);
@@ -1613,8 +1631,8 @@ init_picture_refs (GstVaapiDecoderH265 * decoder,
 {
   GstVaapiDecoderH265Private *const priv = &decoder->priv;
   guint32 NumRpsCurrTempList0 = 0, NumRpsCurrTempList1 = 0;
-  GstVaapiPictureH265 *RefPicListTemp0[16] = { NULL, }, *RefPicListTemp1[16] = {
-  NULL,};
+  GstVaapiPictureH265 *RefPicListTemp0[16] = { NULL, };
+  GstVaapiPictureH265 *RefPicListTemp1[16] = { NULL, };
   guint i, rIdx = 0;
   guint num_ref_idx_l0_active_minus1 = 0;
   guint num_ref_idx_l1_active_minus1 = 0;
@@ -1814,8 +1832,17 @@ fill_picture (GstVaapiDecoderH265 * decoder, GstVaapiPictureH265 * picture)
   GstVaapiPicture *const base_picture = &picture->base;
   GstH265PPS *const pps = get_pps (decoder);
   GstH265SPS *const sps = get_sps (decoder);
-  VAPictureParameterBufferHEVC *const pic_param = base_picture->param;
+  VAPictureParameterBufferHEVC *pic_param = base_picture->param;
   guint i, n;
+
+#if VA_CHECK_VERSION(1,2,0)
+  VAPictureParameterBufferHEVCRext *pic_rext_param = NULL;
+  if (is_range_extension_profile (priv->profile)) {
+    VAPictureParameterBufferHEVCExtension *param = base_picture->param;
+    pic_param = &param->base;
+    pic_rext_param = &param->rext;
+  }
+#endif
 
   pic_param->pic_fields.value = 0;
   pic_param->slice_parsing_fields.value = 0;
@@ -1928,6 +1955,56 @@ fill_picture (GstVaapiDecoderH265 * decoder, GstVaapiPictureH265 * picture)
 
   /* FIXME: Set correct value as mentioned in va_dec_hevc.h */
   pic_param->st_rps_bits = 0;
+
+#if VA_CHECK_VERSION(1,2,0)
+  if (pic_rext_param) {
+    pic_rext_param->range_extension_pic_fields.value = 0;
+
+#define COPY_REXT_FIELD(s, f) \
+		pic_rext_param->f = s.f
+#define COPY_REXT_BFM(a, s, f) \
+		pic_rext_param->a.bits.f = s.f
+
+    COPY_REXT_BFM (range_extension_pic_fields, sps->sps_extnsion_params,
+        transform_skip_rotation_enabled_flag);
+    COPY_REXT_BFM (range_extension_pic_fields, sps->sps_extnsion_params,
+        transform_skip_context_enabled_flag);
+    COPY_REXT_BFM (range_extension_pic_fields, sps->sps_extnsion_params,
+        implicit_rdpcm_enabled_flag);
+    COPY_REXT_BFM (range_extension_pic_fields, sps->sps_extnsion_params,
+        explicit_rdpcm_enabled_flag);
+    COPY_REXT_BFM (range_extension_pic_fields, sps->sps_extnsion_params,
+        extended_precision_processing_flag);
+    COPY_REXT_BFM (range_extension_pic_fields, sps->sps_extnsion_params,
+        intra_smoothing_disabled_flag);
+    COPY_REXT_BFM (range_extension_pic_fields, sps->sps_extnsion_params,
+        high_precision_offsets_enabled_flag);
+    COPY_REXT_BFM (range_extension_pic_fields, sps->sps_extnsion_params,
+        persistent_rice_adaptation_enabled_flag);
+    COPY_REXT_BFM (range_extension_pic_fields, sps->sps_extnsion_params,
+        cabac_bypass_alignment_enabled_flag);
+
+    COPY_REXT_BFM (range_extension_pic_fields, pps->pps_extension_params,
+        cross_component_prediction_enabled_flag);
+    COPY_REXT_BFM (range_extension_pic_fields, pps->pps_extension_params,
+        chroma_qp_offset_list_enabled_flag);
+
+    COPY_REXT_FIELD (pps->pps_extension_params, diff_cu_chroma_qp_offset_depth);
+    COPY_REXT_FIELD (pps->pps_extension_params,
+        chroma_qp_offset_list_len_minus1);
+    COPY_REXT_FIELD (pps->pps_extension_params, log2_sao_offset_scale_luma);
+    COPY_REXT_FIELD (pps->pps_extension_params, log2_sao_offset_scale_chroma);
+    COPY_REXT_FIELD (pps->pps_extension_params,
+        log2_max_transform_skip_block_size_minus2);
+
+    memcpy (pic_rext_param->cb_qp_offset_list,
+        pps->pps_extension_params.cb_qp_offset_list,
+        sizeof (pic_rext_param->cb_qp_offset_list));
+    memcpy (pic_rext_param->cr_qp_offset_list,
+        pps->pps_extension_params.cr_qp_offset_list,
+        sizeof (pic_rext_param->cr_qp_offset_list));
+  }
+#endif
   return TRUE;
 }
 
@@ -2132,9 +2209,9 @@ decode_ref_pic_set (GstVaapiDecoderH265 * decoder,
     priv->NumPocLtCurr = priv->NumPocLtFoll = 0;
   } else {
     GstH265ShortTermRefPicSet *stRefPic = NULL;
-    gint32 num_lt_pics, pocLt, PocLsbLt[16] = { 0, }
-    , UsedByCurrPicLt[16] = {
-    0,};
+    gint32 num_lt_pics, pocLt;
+    gint32 PocLsbLt[16] = { 0, };
+    gint32 UsedByCurrPicLt[16] = { 0, };
     gint32 DeltaPocMsbCycleLt[16] = { 0, };
     gint numtotalcurr = 0;
 
@@ -2230,8 +2307,8 @@ decode_picture (GstVaapiDecoderH265 * decoder, GstVaapiDecoderUnit * unit)
   GstVaapiPictureH265 *picture;
   GstVaapiDecoderStatus status;
 
-  g_return_val_if_fail (pps != NULL, GST_VAAPI_DECODER_STATUS_ERROR_UNKNOWN);
-  g_return_val_if_fail (sps != NULL, GST_VAAPI_DECODER_STATUS_ERROR_UNKNOWN);
+  if (!(pps && sps))
+    return GST_VAAPI_DECODER_STATUS_ERROR_UNKNOWN;
 
   status = ensure_context (decoder, sps);
   if (status != GST_VAAPI_DECODER_STATUS_SUCCESS)
@@ -2302,12 +2379,21 @@ fill_pred_weight_table (GstVaapiDecoderH265 * decoder,
     GstVaapiSlice * slice, GstH265SliceHdr * slice_hdr)
 {
   GstVaapiDecoderH265Private *const priv = &decoder->priv;
-  VASliceParameterBufferHEVC *const slice_param = slice->param;
+  VASliceParameterBufferHEVC *slice_param = slice->param;
   GstH265PPS *const pps = get_pps (decoder);
   GstH265SPS *const sps = get_sps (decoder);
   GstH265PredWeightTable *const w = &slice_hdr->pred_weight_table;
   gint chroma_weight, chroma_log2_weight_denom;
   gint i, j;
+
+#if VA_CHECK_VERSION(1,2,0)
+  VASliceParameterBufferHEVCRext *slice_rext_param = NULL;
+  if (is_range_extension_profile (priv->profile)) {
+    VASliceParameterBufferHEVCExtension *param = slice->param;
+    slice_param = &param->base;
+    slice_rext_param = &param->rext;
+  }
+#endif
 
   slice_param->luma_log2_weight_denom = 0;
   slice_param->delta_chroma_log2_weight_denom = 0;
@@ -2333,6 +2419,19 @@ fill_pred_weight_table (GstVaapiDecoderH265 * decoder,
     memset (slice_param->ChromaOffsetL1, 0,
         sizeof (slice_param->ChromaOffsetL1));
 
+#if VA_CHECK_VERSION(1,2,0)
+    if (slice_rext_param) {
+      memset (slice_rext_param->luma_offset_l0, 0,
+          sizeof (slice_rext_param->luma_offset_l0));
+      memset (slice_rext_param->luma_offset_l1, 0,
+          sizeof (slice_rext_param->luma_offset_l1));
+      memset (slice_rext_param->ChromaOffsetL0, 0,
+          sizeof (slice_rext_param->ChromaOffsetL0));
+      memset (slice_rext_param->ChromaOffsetL1, 0,
+          sizeof (slice_rext_param->ChromaOffsetL1));
+    }
+#endif
+
     slice_param->luma_log2_weight_denom = w->luma_log2_weight_denom;
     if (sps->chroma_array_type != 0)
       slice_param->delta_chroma_log2_weight_denom =
@@ -2346,6 +2445,10 @@ fill_pred_weight_table (GstVaapiDecoderH265 * decoder,
       if (slice_hdr->pred_weight_table.luma_weight_l0_flag[i]) {
         slice_param->delta_luma_weight_l0[i] = w->delta_luma_weight_l0[i];
         slice_param->luma_offset_l0[i] = w->luma_offset_l0[i];
+#if VA_CHECK_VERSION(1,2,0)
+        if (slice_rext_param)
+          slice_rext_param->luma_offset_l0[i] = w->luma_offset_l0[i];
+#endif
       }
       if (slice_hdr->pred_weight_table.chroma_weight_l0_flag[i]) {
         for (j = 0; j < 2; j++) {
@@ -2360,6 +2463,14 @@ fill_pred_weight_table (GstVaapiDecoderH265 * decoder,
                   ((priv->WpOffsetHalfRangeC *
                           chroma_weight) >> chroma_log2_weight_denom)),
               -priv->WpOffsetHalfRangeC, priv->WpOffsetHalfRangeC - 1);
+#if VA_CHECK_VERSION(1,2,0)
+          if (slice_rext_param)
+            slice_rext_param->ChromaOffsetL0[i][j] = CLAMP (
+                (priv->WpOffsetHalfRangeC + w->delta_chroma_offset_l0[i][j] -
+                    ((priv->WpOffsetHalfRangeC *
+                            chroma_weight) >> chroma_log2_weight_denom)),
+                -priv->WpOffsetHalfRangeC, priv->WpOffsetHalfRangeC - 1);
+#endif
         }
       }
     }
@@ -2369,6 +2480,10 @@ fill_pred_weight_table (GstVaapiDecoderH265 * decoder,
         if (slice_hdr->pred_weight_table.luma_weight_l1_flag[i]) {
           slice_param->delta_luma_weight_l1[i] = w->delta_luma_weight_l1[i];
           slice_param->luma_offset_l1[i] = w->luma_offset_l1[i];
+#if VA_CHECK_VERSION(1,2,0)
+          if (slice_rext_param)
+            slice_rext_param->luma_offset_l1[i] = w->luma_offset_l1[i];
+#endif
         }
         if (slice_hdr->pred_weight_table.chroma_weight_l1_flag[i]) {
           for (j = 0; j < 2; j++) {
@@ -2385,6 +2500,15 @@ fill_pred_weight_table (GstVaapiDecoderH265 * decoder,
                     ((priv->WpOffsetHalfRangeC *
                             chroma_weight) >> chroma_log2_weight_denom)),
                 -priv->WpOffsetHalfRangeC, priv->WpOffsetHalfRangeC - 1);
+#if VA_CHECK_VERSION(1,2,0)
+            if (slice_rext_param)
+              slice_rext_param->ChromaOffsetL1[i][j] =
+                  CLAMP ((priv->WpOffsetHalfRangeC +
+                      w->delta_chroma_offset_l1[i][j] -
+                      ((priv->WpOffsetHalfRangeC *
+                              chroma_weight) >> chroma_log2_weight_denom)),
+                  -priv->WpOffsetHalfRangeC, priv->WpOffsetHalfRangeC - 1);
+#endif
           }
         }
       }
@@ -2450,8 +2574,18 @@ fill_slice (GstVaapiDecoderH265 * decoder,
     GstVaapiPictureH265 * picture, GstVaapiSlice * slice,
     GstVaapiParserInfoH265 * pi, GstVaapiDecoderUnit * unit)
 {
-  VASliceParameterBufferHEVC *const slice_param = slice->param;
   GstH265SliceHdr *slice_hdr = &pi->data.slice_hdr;
+  VASliceParameterBufferHEVC *slice_param = slice->param;
+
+#if VA_CHECK_VERSION(1,2,0)
+  GstVaapiDecoderH265Private *const priv = &decoder->priv;
+  VASliceParameterBufferHEVCRext *slice_rext_param = NULL;
+  if (is_range_extension_profile (priv->profile)) {
+    VASliceParameterBufferHEVCExtension *param = slice->param;
+    slice_param = &param->base;
+    slice_rext_param = &param->rext;
+  }
+#endif
 
   /* Fill in VASliceParameterBufferH265 */
   slice_param->LongSliceFlags.value = 0;
@@ -2505,6 +2639,12 @@ fill_slice (GstVaapiDecoderH265 * decoder,
   slice_param->five_minus_max_num_merge_cand =
       slice_hdr->five_minus_max_num_merge_cand;
 
+#if VA_CHECK_VERSION(1,2,0)
+  if (slice_rext_param)
+    slice_rext_param->slice_ext_flags.bits.cu_chroma_qp_offset_enabled_flag =
+        slice_hdr->cu_chroma_qp_offset_enabled_flag;
+#endif
+
   if (!fill_RefPicList (decoder, picture, slice, slice_hdr))
     return FALSE;
 
@@ -2521,7 +2661,7 @@ decode_slice (GstVaapiDecoderH265 * decoder, GstVaapiDecoderUnit * unit)
   GstVaapiParserInfoH265 *const pi = unit->parsed_info;
   GstVaapiPictureH265 *const picture = priv->current_picture;
   GstH265SliceHdr *const slice_hdr = &pi->data.slice_hdr;
-  GstVaapiSlice *slice;
+  GstVaapiSlice *slice = NULL;
   GstBuffer *const buffer =
       GST_VAAPI_DECODER_CODEC_FRAME (decoder)->input_buffer;
   GstMapInfo map_info;
@@ -2554,9 +2694,15 @@ decode_slice (GstVaapiDecoderH265 * decoder, GstVaapiDecoderUnit * unit)
   if (pi->flags & GST_VAAPI_DECODER_UNIT_FLAG_AU_END)
     GST_VAAPI_PICTURE_FLAG_SET (picture, GST_VAAPI_PICTURE_FLAG_AU_END);
 
-  slice = GST_VAAPI_SLICE_NEW (HEVC, decoder,
-      (map_info.data + unit->offset + pi->nalu.offset), pi->nalu.size);
-
+  if (is_range_extension_profile (priv->profile)) {
+#if VA_CHECK_VERSION(1,2,0)
+    slice = GST_VAAPI_SLICE_NEW (HEVCExtension, decoder,
+        (map_info.data + unit->offset + pi->nalu.offset), pi->nalu.size);
+#endif
+  } else {
+    slice = GST_VAAPI_SLICE_NEW (HEVC, decoder,
+        (map_info.data + unit->offset + pi->nalu.offset), pi->nalu.size);
+  }
   gst_buffer_unmap (buffer, &map_info);
   if (!slice) {
     GST_ERROR ("failed to allocate slice");

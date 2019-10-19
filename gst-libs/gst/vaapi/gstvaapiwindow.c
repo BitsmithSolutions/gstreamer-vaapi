@@ -33,8 +33,22 @@
 #include "gstvaapidisplay_priv.h"
 #include "gstvaapisurface_priv.h"
 
-#define DEBUG 1
-#include "gstvaapidebug.h"
+GST_DEBUG_CATEGORY (gst_debug_vaapi_window);
+#define GST_CAT_DEFAULT gst_debug_vaapi_window
+
+#define _do_init \
+    GST_DEBUG_CATEGORY_INIT (gst_debug_vaapi_window, "vaapiwindow", 0, \
+        "VA-API Window");
+
+G_DEFINE_ABSTRACT_TYPE_WITH_CODE (GstVaapiWindow, gst_vaapi_window,
+    GST_TYPE_OBJECT, _do_init);
+
+enum
+{
+  PROP_DISPLAY = 1,
+  N_PROPERTIES
+};
+static GParamSpec *g_properties[N_PROPERTIES] = { NULL, };
 
 static void
 gst_vaapi_window_ensure_size (GstVaapiWindow * window)
@@ -55,7 +69,7 @@ gst_vaapi_window_ensure_size (GstVaapiWindow * window)
 static gboolean
 ensure_filter (GstVaapiWindow * window)
 {
-  GstVaapiDisplay *const display = GST_VAAPI_OBJECT_DISPLAY (window);
+  GstVaapiDisplay *const display = GST_VAAPI_WINDOW_DISPLAY (window);
 
   /* Ensure VPP pipeline is built */
   if (window->filter)
@@ -87,7 +101,7 @@ error_unsupported_format:
 static gboolean
 ensure_filter_surface_pool (GstVaapiWindow * window)
 {
-  GstVaapiDisplay *const display = GST_VAAPI_OBJECT_DISPLAY (window);
+  GstVaapiDisplay *const display = GST_VAAPI_WINDOW_DISPLAY (window);
 
   if (window->surface_pool)
     goto ensure_filter;
@@ -109,7 +123,7 @@ ensure_filter:
 static gboolean
 gst_vaapi_window_create (GstVaapiWindow * window, guint width, guint height)
 {
-  gst_vaapi_display_get_size (GST_VAAPI_OBJECT_DISPLAY (window),
+  gst_vaapi_display_get_size (GST_VAAPI_WINDOW_DISPLAY (window),
       &window->display_width, &window->display_height);
 
   if (!GST_VAAPI_WINDOW_GET_CLASS (window)->create (window, &width, &height))
@@ -124,24 +138,82 @@ gst_vaapi_window_create (GstVaapiWindow * window, guint width, guint height)
 }
 
 static void
-gst_vaapi_window_finalize (GstVaapiWindow * window)
+gst_vaapi_window_finalize (GObject * object)
 {
+  GstVaapiWindow *const window = GST_VAAPI_WINDOW (object);
+
   gst_vaapi_video_pool_replace (&window->surface_pool, NULL);
   gst_vaapi_filter_replace (&window->filter, NULL);
+  gst_vaapi_display_replace (&window->display, NULL);
+
+  G_OBJECT_CLASS (gst_vaapi_window_parent_class)->finalize (object);
 }
 
-void
+static void
+gst_vaapi_window_set_property (GObject * object, guint property_id,
+    const GValue * value, GParamSpec * pspec)
+{
+  GstVaapiWindow *const window = GST_VAAPI_WINDOW (object);
+
+  switch (property_id) {
+    case PROP_DISPLAY:
+      g_assert (window->display == NULL);
+      window->display = g_value_dup_object (value);
+      g_assert (window->display != NULL);
+      window->has_vpp = GST_VAAPI_DISPLAY_HAS_VPP (window->display);
+      break;
+    default:
+      G_OBJECT_WARN_INVALID_PROPERTY_ID (object, property_id, pspec);
+      break;
+  }
+}
+
+static void
+gst_vaapi_window_get_property (GObject * object, guint property_id,
+    GValue * value, GParamSpec * pspec)
+{
+  GstVaapiWindow *const window = GST_VAAPI_WINDOW (object);
+
+  switch (property_id) {
+    case PROP_DISPLAY:
+      g_value_set_object (value, window->display);
+      break;
+    default:
+      G_OBJECT_WARN_INVALID_PROPERTY_ID (object, property_id, pspec);
+      break;
+  }
+}
+
+static void
 gst_vaapi_window_class_init (GstVaapiWindowClass * klass)
 {
-  GstVaapiObjectClass *const object_class = GST_VAAPI_OBJECT_CLASS (klass);
+  GObjectClass *const object_class = G_OBJECT_CLASS (klass);
 
-  object_class->finalize = (GstVaapiObjectFinalizeFunc)
-      gst_vaapi_window_finalize;
+  object_class->set_property = gst_vaapi_window_set_property;
+  object_class->get_property = gst_vaapi_window_get_property;
+  object_class->finalize = gst_vaapi_window_finalize;
+
+  /**
+   * GstVaapiWindow:display:
+   *
+   * #GstVaapiDisplay to be used.
+   */
+  g_properties[PROP_DISPLAY] =
+      g_param_spec_object ("display", "Gst VA-API Display",
+      "The VA-API display object to use", GST_TYPE_VAAPI_DISPLAY,
+      G_PARAM_READWRITE | G_PARAM_CONSTRUCT_ONLY | G_PARAM_STATIC_NAME);
+
+  g_object_class_install_properties (object_class, N_PROPERTIES, g_properties);
+}
+
+static void
+gst_vaapi_window_init (GstVaapiWindow * window)
+{
 }
 
 GstVaapiWindow *
-gst_vaapi_window_new_internal (const GstVaapiWindowClass * window_class,
-    GstVaapiDisplay * display, GstVaapiID id, guint width, guint height)
+gst_vaapi_window_new_internal (GType type, GstVaapiDisplay * display,
+    GstVaapiID id, guint width, guint height)
 {
   GstVaapiWindow *window;
 
@@ -153,24 +225,25 @@ gst_vaapi_window_new_internal (const GstVaapiWindowClass * window_class,
     g_return_val_if_fail (height > 0, NULL);
   }
 
-  window = gst_vaapi_object_new (GST_VAAPI_OBJECT_CLASS (window_class),
-      display);
+  window = g_object_new (type, "display", display, NULL);
   if (!window)
     return NULL;
 
   window->use_foreign_window = id != GST_VAAPI_ID_INVALID;
-  GST_VAAPI_OBJECT_ID (window) = window->use_foreign_window ? id : 0;
-  window->has_vpp =
-      GST_VAAPI_DISPLAY_HAS_VPP (GST_VAAPI_OBJECT_DISPLAY (window));
+  GST_VAAPI_WINDOW_ID (window) = window->use_foreign_window ? id : 0;
+
+  GST_DEBUG_OBJECT (window, "new window with id = 0x%08" G_GSIZE_MODIFIER
+      "x and size %ux%u", id, width, height);
 
   if (!gst_vaapi_window_create (window, width, height))
     goto error;
+
   return window;
 
   /* ERRORS */
 error:
   {
-    gst_vaapi_window_unref (window);
+    gst_object_unref (window);
     return NULL;
   }
 }
@@ -234,40 +307,13 @@ gst_vaapi_window_new (GstVaapiDisplay * display, guint width, guint height)
 {
   GstVaapiDisplayClass *dpy_class;
 
-  g_return_val_if_fail (display != NULL, NULL);
+  g_return_val_if_fail (GST_VAAPI_IS_DISPLAY (display), NULL);
 
   dpy_class = GST_VAAPI_DISPLAY_GET_CLASS (display);
   if (G_UNLIKELY (!dpy_class->create_window))
     return NULL;
   return dpy_class->create_window (display, GST_VAAPI_ID_INVALID, width,
       height);
-}
-
-/**
- * gst_vaapi_window_ref:
- * @window: a #GstVaapiWindow
- *
- * Atomically increases the reference count of the given @window by one.
- *
- * Returns: The same @window argument
- */
-GstVaapiWindow *
-gst_vaapi_window_ref (GstVaapiWindow * window)
-{
-  return (GstVaapiWindow *) gst_vaapi_object_ref (GST_VAAPI_OBJECT (window));
-}
-
-/**
- * gst_vaapi_window_unref:
- * @window: a #GstVaapiWindow
- *
- * Atomically decreases the reference count of the @window by one. If
- * the reference count reaches zero, the window will be free'd.
- */
-void
-gst_vaapi_window_unref (GstVaapiWindow * window)
-{
-  gst_vaapi_object_unref (GST_VAAPI_OBJECT (window));
 }
 
 /**
@@ -283,8 +329,7 @@ void
 gst_vaapi_window_replace (GstVaapiWindow ** old_window_ptr,
     GstVaapiWindow * new_window)
 {
-  gst_vaapi_object_replace ((GstVaapiObject **) (old_window_ptr),
-      GST_VAAPI_OBJECT (new_window));
+  gst_object_replace ((GstObject **) old_window_ptr, GST_OBJECT (new_window));
 }
 
 /**
@@ -298,9 +343,9 @@ gst_vaapi_window_replace (GstVaapiWindow ** old_window_ptr,
 GstVaapiDisplay *
 gst_vaapi_window_get_display (GstVaapiWindow * window)
 {
-  g_return_val_if_fail (window != NULL, NULL);
+  g_return_val_if_fail (GST_VAAPI_IS_WINDOW (window), NULL);
 
-  return GST_VAAPI_OBJECT_DISPLAY (window);
+  return GST_VAAPI_WINDOW_DISPLAY (window);
 }
 
 /**
@@ -313,7 +358,7 @@ gst_vaapi_window_get_display (GstVaapiWindow * window)
 void
 gst_vaapi_window_show (GstVaapiWindow * window)
 {
-  g_return_if_fail (window != NULL);
+  g_return_if_fail (GST_VAAPI_IS_WINDOW (window));
 
   GST_VAAPI_WINDOW_GET_CLASS (window)->show (window);
   window->check_geometry = TRUE;
@@ -329,7 +374,7 @@ gst_vaapi_window_show (GstVaapiWindow * window)
 void
 gst_vaapi_window_hide (GstVaapiWindow * window)
 {
-  g_return_if_fail (window != NULL);
+  g_return_if_fail (GST_VAAPI_IS_WINDOW (window));
 
   GST_VAAPI_WINDOW_GET_CLASS (window)->hide (window);
 }
@@ -345,7 +390,7 @@ gst_vaapi_window_hide (GstVaapiWindow * window)
 gboolean
 gst_vaapi_window_get_fullscreen (GstVaapiWindow * window)
 {
-  g_return_val_if_fail (window != NULL, FALSE);
+  g_return_val_if_fail (GST_VAAPI_IS_WINDOW (window), FALSE);
 
   gst_vaapi_window_ensure_size (window);
 
@@ -364,7 +409,7 @@ gst_vaapi_window_set_fullscreen (GstVaapiWindow * window, gboolean fullscreen)
 {
   const GstVaapiWindowClass *klass;
 
-  g_return_if_fail (window != NULL);
+  g_return_if_fail (GST_VAAPI_IS_WINDOW (window));
 
   klass = GST_VAAPI_WINDOW_GET_CLASS (window);
 
@@ -386,7 +431,7 @@ gst_vaapi_window_set_fullscreen (GstVaapiWindow * window, gboolean fullscreen)
 guint
 gst_vaapi_window_get_width (GstVaapiWindow * window)
 {
-  g_return_val_if_fail (window != NULL, 0);
+  g_return_val_if_fail (GST_VAAPI_IS_WINDOW (window), 0);
 
   gst_vaapi_window_ensure_size (window);
 
@@ -404,7 +449,7 @@ gst_vaapi_window_get_width (GstVaapiWindow * window)
 guint
 gst_vaapi_window_get_height (GstVaapiWindow * window)
 {
-  g_return_val_if_fail (window != NULL, 0);
+  g_return_val_if_fail (GST_VAAPI_IS_WINDOW (window), 0);
 
   gst_vaapi_window_ensure_size (window);
 
@@ -423,7 +468,7 @@ void
 gst_vaapi_window_get_size (GstVaapiWindow * window, guint * width_ptr,
     guint * height_ptr)
 {
-  g_return_if_fail (window != NULL);
+  g_return_if_fail (GST_VAAPI_IS_WINDOW (window));
 
   gst_vaapi_window_ensure_size (window);
 
@@ -444,7 +489,7 @@ gst_vaapi_window_get_size (GstVaapiWindow * window, guint * width_ptr,
 void
 gst_vaapi_window_set_width (GstVaapiWindow * window, guint width)
 {
-  g_return_if_fail (window != NULL);
+  g_return_if_fail (GST_VAAPI_IS_WINDOW (window));
 
   gst_vaapi_window_set_size (window, width, window->height);
 }
@@ -459,7 +504,7 @@ gst_vaapi_window_set_width (GstVaapiWindow * window, guint width)
 void
 gst_vaapi_window_set_height (GstVaapiWindow * window, guint height)
 {
-  g_return_if_fail (window != NULL);
+  g_return_if_fail (GST_VAAPI_IS_WINDOW (window));
 
   gst_vaapi_window_set_size (window, window->width, height);
 }
@@ -475,7 +520,7 @@ gst_vaapi_window_set_height (GstVaapiWindow * window, guint height)
 void
 gst_vaapi_window_set_size (GstVaapiWindow * window, guint width, guint height)
 {
-  g_return_if_fail (window != NULL);
+  g_return_if_fail (GST_VAAPI_IS_WINDOW (window));
 
   if (width == window->width && height == window->height)
     return;
@@ -537,7 +582,7 @@ gst_vaapi_window_put_surface (GstVaapiWindow * window,
   const GstVaapiWindowClass *klass;
   GstVaapiRectangle src_rect_default, dst_rect_default;
 
-  g_return_val_if_fail (window != NULL, FALSE);
+  g_return_val_if_fail (GST_VAAPI_IS_WINDOW (window), FALSE);
   g_return_val_if_fail (surface != NULL, FALSE);
 
   klass = GST_VAAPI_WINDOW_GET_CLASS (window);
@@ -592,7 +637,7 @@ gst_vaapi_window_put_pixmap (GstVaapiWindow * window,
   const GstVaapiWindowClass *klass;
   GstVaapiRectangle src_rect_default, dst_rect_default;
 
-  g_return_val_if_fail (window != NULL, FALSE);
+  g_return_val_if_fail (GST_VAAPI_IS_WINDOW (window), FALSE);
   g_return_val_if_fail (pixmap != NULL, FALSE);
 
   klass = GST_VAAPI_WINDOW_GET_CLASS (window);
@@ -621,7 +666,7 @@ gst_vaapi_window_put_pixmap (GstVaapiWindow * window,
 void
 gst_vaapi_window_reconfigure (GstVaapiWindow * window)
 {
-  g_return_if_fail (window != NULL);
+  g_return_if_fail (GST_VAAPI_IS_WINDOW (window));
 
   window->check_geometry = TRUE;
   gst_vaapi_window_ensure_size (window);
@@ -638,7 +683,7 @@ gst_vaapi_window_unblock (GstVaapiWindow * window)
 {
   const GstVaapiWindowClass *klass;
 
-  g_return_val_if_fail (window != NULL, FALSE);
+  g_return_val_if_fail (GST_VAAPI_IS_WINDOW (window), FALSE);
 
   klass = GST_VAAPI_WINDOW_GET_CLASS (window);
 
@@ -659,7 +704,7 @@ gst_vaapi_window_unblock_cancel (GstVaapiWindow * window)
 {
   const GstVaapiWindowClass *klass;
 
-  g_return_val_if_fail (window != NULL, FALSE);
+  g_return_val_if_fail (GST_VAAPI_IS_WINDOW (window), FALSE);
 
   klass = GST_VAAPI_WINDOW_GET_CLASS (window);
 

@@ -30,15 +30,14 @@
  * the unregistered vaapidecode, a #GstQueue, and the
  * #GstVaapiPostproc, if it is available and functional in the setup.
  *
- * It offers the functionality of #GstVaapiDecode and the many options
+ * It offers the functionality of GstVaapiDecoder and the many options
  * of #GstVaapiPostproc.
  *
- * <refsect2>
- * <title>Example launch line</title>
+ * ## Example launch line
+ *
  * |[
  * gst-launch-1.0 filesrc location=~/big_buck_bunny.mov ! qtdemux ! h264parse ! vaapidecodebin ! vaapisink
  * ]|
- * </refsect2>
  */
 
 #include "gstcompat.h"
@@ -58,7 +57,7 @@
 GST_DEBUG_CATEGORY_STATIC (gst_debug_vaapi_decode_bin);
 #define GST_CAT_DEFAULT gst_debug_vaapi_decode_bin
 
-#define DEFAULT_QUEUE_MAX_SIZE_BUFFERS 0
+#define DEFAULT_QUEUE_MAX_SIZE_BUFFERS 1
 #define DEFAULT_QUEUE_MAX_SIZE_BYTES   0
 #define DEFAULT_QUEUE_MAX_SIZE_TIME    0
 #define DEFAULT_DEINTERLACE_METHOD     GST_VAAPI_DEINTERLACE_METHOD_BOB
@@ -86,16 +85,10 @@ static const char gst_vaapi_decode_bin_sink_caps_str[] =
     GST_CAPS_CODEC("video/x-xvid")
     GST_CAPS_CODEC("video/x-h263")
     GST_CAPS_CODEC("video/x-h264")
-#if USE_H265_DECODER
     GST_CAPS_CODEC("video/x-h265")
-#endif
     GST_CAPS_CODEC("video/x-wmv")
-#if USE_VP8_DECODER
     GST_CAPS_CODEC("video/x-vp8")
-#endif
-#if USE_VP9_DECODER
     GST_CAPS_CODEC("video/x-vp9")
-#endif
     ;
 /* *INDENT-ON* */
 
@@ -252,7 +245,7 @@ gst_vaapi_decode_bin_class_init (GstVaapiDecodeBinClass * klass)
   element_class->change_state = gst_vaapi_decode_bin_change_state;
   gst_element_class_set_static_metadata (element_class,
       "VA-API Decode Bin",
-      "Codec/Decoder/Video",
+      "Codec/Decoder/Video/Hardware",
       GST_PLUGIN_DESC,
       "Sreerenj Balachandran <sreerenj.balachandran@intel.com>, "
       "Victor Jaquez <victorx.jaquez@intel.com>");
@@ -406,7 +399,9 @@ gst_vaapi_decode_bin_init (GstVaapiDecodeBin * vaapidecbin)
 {
   GstPad *pad, *ghostpad;
 
-  vaapidecbin->deinterlace_method = DEFAULT_DEINTERLACE_METHOD;
+  vaapidecbin->max_size_bytes = DEFAULT_QUEUE_MAX_SIZE_BYTES;
+  vaapidecbin->max_size_buffers = DEFAULT_QUEUE_MAX_SIZE_BUFFERS;
+  vaapidecbin->max_size_time = DEFAULT_QUEUE_MAX_SIZE_TIME;
   vaapidecbin->disable_vpp = (g_getenv ("GST_VAAPI_DISABLE_VPP") != NULL);
 
   /* create the decoder */

@@ -54,6 +54,12 @@ gboolean
 vaapi_create_buffer (VADisplay dpy, VAContextID ctx, int type, guint size,
     gconstpointer data, VABufferID * buf_id, gpointer * mapped_data);
 
+G_GNUC_INTERNAL
+gboolean
+vaapi_create_n_elements_buffer (VADisplay dpy, VAContextID ctx, int type,
+    guint size, gconstpointer data, VABufferID * buf_id, gpointer * mapped_data,
+    int num_elements);
+
 /** Destroy VA buffer */
 G_GNUC_INTERNAL
 void
@@ -146,5 +152,18 @@ from_GstVaapiScaleMethod (guint value);
 G_GNUC_INTERNAL
 guint
 to_GstVaapiScaleMethod (guint flags);
+
+G_GNUC_INTERNAL
+void
+from_GstVideoOrientationMethod (guint value, guint * va_mirror,
+    guint * va_rotation);
+
+G_GNUC_INTERNAL
+guint
+from_GstVaapiBufferMemoryType (guint type);
+
+G_GNUC_INTERNAL
+guint
+to_GstVaapiBufferMemoryType (guint va_type);
 
 #endif /* GST_VAAPI_UTILS_H */

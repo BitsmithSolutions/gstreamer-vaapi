@@ -27,26 +27,21 @@
 
 G_BEGIN_DECLS
 
+#define GST_TYPE_VAAPI_ENCODER_JPEG \
+    (gst_vaapi_encoder_jpeg_get_type ())
 #define GST_VAAPI_ENCODER_JPEG(encoder) \
-  ((GstVaapiEncoderJpeg *) (encoder))
+    (G_TYPE_CHECK_INSTANCE_CAST ((encoder), GST_TYPE_VAAPI_ENCODER_JPEG, GstVaapiEncoderJpeg))
+#define GST_IS_VAAPI_ENCODER_JPEG(encoder) \
+    (G_TYPE_CHECK_INSTANCE_TYPE ((encoder), GST_TYPE_VAAPI_ENCODER_JPEG))
 
 typedef struct _GstVaapiEncoderJpeg GstVaapiEncoderJpeg;
+typedef struct _GstVaapiEncoderJpegClass GstVaapiEncoderJpegClass;
 
-/**
- * GstVaapiEncoderJpegProp:
- * @GST_VAAPI_ENCODER_JPEG_PROP_QUALITY: Quality Factor value (uint).
- *
- * The set of JPEG encoder specific configurable properties.
- */
-typedef enum {
-  GST_VAAPI_ENCODER_JPEG_PROP_QUALITY = -1
-} GstVaapiEncoderJpegProp;
+GType
+gst_vaapi_encoder_jpeg_get_type (void) G_GNUC_CONST;
 
 GstVaapiEncoder *
 gst_vaapi_encoder_jpeg_new (GstVaapiDisplay * display);
-
-GPtrArray *
-gst_vaapi_encoder_jpeg_get_default_properties (void);
 
 G_END_DECLS
 #endif /*GST_VAAPI_ENCODER_JPEG_H */

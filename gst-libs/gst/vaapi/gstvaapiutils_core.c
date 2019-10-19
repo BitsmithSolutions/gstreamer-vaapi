@@ -77,81 +77,151 @@ gst_vaapi_get_config_attribute (GstVaapiDisplay * display, VAProfile profile,
   return TRUE;
 }
 
-/**
- * gst_vaapi_get_surface_formats:
- * @display: a #GstVaapiDisplay
- * @config: a #VAConfigID
- *
- * Gets surface formats for the supplied config.
- *
- * This function will query for all the supported formats for the
- * supplied VA @config.
- *
- * Return value: (transfer full): a #GArray of #GstVideoFormats or %NULL
- */
-GArray *
-gst_vaapi_get_surface_formats (GstVaapiDisplay * display, VAConfigID config)
+static VASurfaceAttrib *
+get_surface_attributes (GstVaapiDisplay * display, VAConfigID config,
+    guint * num_attribs)
 {
-#if VA_CHECK_VERSION(0,34,0)
   VASurfaceAttrib *surface_attribs = NULL;
-  guint i, num_surface_attribs = 0;
+  guint num_surface_attribs = 0;
   VAStatus va_status;
-  GArray *formats;
 
   if (config == VA_INVALID_ID)
-    return NULL;
+    goto error;
 
   GST_VAAPI_DISPLAY_LOCK (display);
   va_status = vaQuerySurfaceAttributes (GST_VAAPI_DISPLAY_VADISPLAY (display),
       config, NULL, &num_surface_attribs);
   GST_VAAPI_DISPLAY_UNLOCK (display);
   if (!vaapi_check_status (va_status, "vaQuerySurfaceAttributes()"))
-    return NULL;
+    goto error;
 
   surface_attribs = g_malloc (num_surface_attribs * sizeof (*surface_attribs));
   if (!surface_attribs)
-    return NULL;
+    goto error;
 
   GST_VAAPI_DISPLAY_LOCK (display);
   va_status = vaQuerySurfaceAttributes (GST_VAAPI_DISPLAY_VADISPLAY (display),
       config, surface_attribs, &num_surface_attribs);
   GST_VAAPI_DISPLAY_UNLOCK (display);
   if (!vaapi_check_status (va_status, "vaQuerySurfaceAttributes()"))
+    goto error;
+
+  if (num_attribs)
+    *num_attribs = num_surface_attribs;
+  return surface_attribs;
+
+  /* ERRORS */
+error:
+  {
+    if (num_attribs)
+      *num_attribs = -1;
+    if (surface_attribs)
+      g_free (surface_attribs);
+    return NULL;
+  }
+}
+
+/**
+ * gst_vaapi_config_surface_attribures_get:
+ * @display: a #GstVaapiDisplay
+ * @config: a #VAConfigID
+ *
+ * Retrieves the possible surface attributes for the supplied config.
+ *
+ * Returns: (transfer full): returns a #GstVaapiConfigSurfaceAttributes
+ **/
+GstVaapiConfigSurfaceAttributes *
+gst_vaapi_config_surface_attributes_get (GstVaapiDisplay * display,
+    VAConfigID config)
+{
+  VASurfaceAttrib *surface_attribs;
+  guint i, num_pixel_formats = 0, num_surface_attribs = 0;
+  GstVaapiConfigSurfaceAttributes *attribs = NULL;
+
+  surface_attribs =
+      get_surface_attributes (display, config, &num_surface_attribs);
+  if (!surface_attribs)
     return NULL;
 
-  formats = g_array_sized_new (FALSE, FALSE, sizeof (GstVideoFormat),
-      num_surface_attribs);
-  if (!formats)
+  attribs = g_slice_new0 (GstVaapiConfigSurfaceAttributes);
+  if (!attribs)
     goto error;
 
   for (i = 0; i < num_surface_attribs; i++) {
     const VASurfaceAttrib *const attrib = &surface_attribs[i];
-    GstVideoFormat fmt;
 
-    if (attrib->type != VASurfaceAttribPixelFormat)
-      continue;
-    if (!(attrib->flags & VA_SURFACE_ATTRIB_SETTABLE))
-      continue;
+    switch (attrib->type) {
+      case VASurfaceAttribPixelFormat:
+        if ((attrib->flags & VA_SURFACE_ATTRIB_SETTABLE)) {
+          GstVideoFormat fmt;
 
-    fmt = gst_vaapi_video_format_from_va_fourcc (attrib->value.value.i);
-    if (fmt == GST_VIDEO_FORMAT_UNKNOWN)
-      continue;
-    g_array_append_val (formats, fmt);
+          fmt = gst_vaapi_video_format_from_va_fourcc (attrib->value.value.i);
+          if (fmt != GST_VIDEO_FORMAT_UNKNOWN)
+            num_pixel_formats++;
+        }
+        break;
+      case VASurfaceAttribMinWidth:
+        attribs->min_width = attrib->value.value.i;
+        break;
+      case VASurfaceAttribMinHeight:
+        attribs->min_height = attrib->value.value.i;
+        break;
+      case VASurfaceAttribMaxWidth:
+        attribs->max_width = attrib->value.value.i;
+        break;
+      case VASurfaceAttribMaxHeight:
+        attribs->max_height = attrib->value.value.i;
+        break;
+      case VASurfaceAttribMemoryType:
+        attribs->mem_types = attrib->value.value.i;
+        break;
+      default:
+        break;
+    }
   }
 
-  if (formats->len == 0) {
-    g_array_unref (formats);
-    formats = NULL;
+  if (num_pixel_formats == 0) {
+    attribs->formats = NULL;
+  } else {
+    attribs->formats = g_array_sized_new (FALSE, FALSE, sizeof (GstVideoFormat),
+        num_pixel_formats);
+
+    for (i = 0; i < num_surface_attribs; i++) {
+      const VASurfaceAttrib *const attrib = &surface_attribs[i];
+      GstVideoFormat fmt;
+
+      if (attrib->type != VASurfaceAttribPixelFormat)
+        continue;
+      if (!(attrib->flags & VA_SURFACE_ATTRIB_SETTABLE))
+        continue;
+
+      fmt = gst_vaapi_video_format_from_va_fourcc (attrib->value.value.i);
+      if (fmt == GST_VIDEO_FORMAT_UNKNOWN)
+        continue;
+      g_array_append_val (attribs->formats, fmt);
+    }
   }
 
   g_free (surface_attribs);
-  return formats;
+  return attribs;
 
   /* ERRORS */
 error:
   {
     g_free (surface_attribs);
+    gst_vaapi_config_surface_attributes_free (attribs);
+    return NULL;
   }
-#endif
-  return NULL;
+}
+
+void
+gst_vaapi_config_surface_attributes_free (GstVaapiConfigSurfaceAttributes *
+    attribs)
+{
+  if (!attribs)
+    return;
+
+  if (attribs->formats)
+    g_array_unref (attribs->formats);
+  g_slice_free (GstVaapiConfigSurfaceAttributes, attribs);
 }

@@ -178,6 +178,8 @@ typedef enum {
     GST_VAAPI_PROFILE_H265_MAIN_STILL_PICTURE =
                                                GST_VAAPI_MAKE_PROFILE(H265,3),
     GST_VAAPI_PROFILE_H265_MAIN_422_10        = GST_VAAPI_MAKE_PROFILE(H265,4),
+    GST_VAAPI_PROFILE_H265_MAIN_444           = GST_VAAPI_MAKE_PROFILE(H265,5),
+    GST_VAAPI_PROFILE_H265_MAIN_444_10        = GST_VAAPI_MAKE_PROFILE(H265,6),
     GST_VAAPI_PROFILE_VP9_0                   = GST_VAAPI_MAKE_PROFILE(VP9,1),
     GST_VAAPI_PROFILE_VP9_1                   = GST_VAAPI_MAKE_PROFILE(VP9,2),
     GST_VAAPI_PROFILE_VP9_2                   = GST_VAAPI_MAKE_PROFILE(VP9,3),
@@ -218,6 +220,9 @@ gst_vaapi_profile_from_caps(const GstCaps *caps);
 
 const gchar *
 gst_vaapi_profile_get_name(GstVaapiProfile profile);
+
+const gchar *
+gst_vaapi_profile_get_va_name(GstVaapiProfile profile);
 
 const gchar *
 gst_vaapi_profile_get_media_type_name(GstVaapiProfile profile);

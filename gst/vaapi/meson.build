@@ -21,24 +21,22 @@ if USE_ENCODERS
   vaapi_sources += [
       'gstvaapiencode.c',
       'gstvaapiencode_h264.c',
+      'gstvaapiencode_h265.c',
+      'gstvaapiencode_jpeg.c',
       'gstvaapiencode_mpeg2.c',
+      'gstvaapiencode_vp8.c',
     ]
-endif
-
-if USE_JPEG_ENCODER
-  vaapi_sources += 'gstvaapiencode_jpeg.c'
-endif
-
-if USE_VP8_ENCODER
-  vaapi_sources += 'gstvaapiencode_vp8.c'
-endif
-
-if USE_H265_ENCODER
-  vaapi_sources += 'gstvaapiencode_h265.c'
 endif
 
 if USE_VP9_ENCODER
   vaapi_sources += 'gstvaapiencode_vp9.c'
+endif
+
+if USE_H264_FEI_ENCODER
+  vaapi_sources += [
+      'gstvaapifeivideometa.c',
+      'gstvaapiencode_h264_fei.c',
+    ]
 endif
 
 gstvaapi = library('gstvaapi',
@@ -50,3 +48,5 @@ gstvaapi = library('gstvaapi',
   install : true,
   install_dir : plugins_install_dir,
 )
+
+plugins = [gstvaapi]
